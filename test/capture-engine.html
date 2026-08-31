@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>滚动截图引擎自测 — 嵌套滚动容器</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; }
+  #sidebar {
+    width: 200px; background: #1f2937; color: #cbd5e1; padding: 16px;
+    height: 100vh; position: fixed; left: 0; top: 0; overflow: hidden; z-index: 1;
+  }
+  #sidebar h3 { color: #fff; font-size: 14px; margin: 0 0 12px; }
+  #sidebar .nav { list-style: none; padding: 0; margin: 0; font-size: 13px; }
+  #sidebar .nav li { padding: 8px 10px; border-radius: 6px; margin-bottom: 4px; }
+  #sidebar .nav li.active { background: #3d7bff; color: #fff; }
+  #sidebar .note { margin-top: 48px; font-size: 12px; color: #6b7280; line-height: 1.6; }
+  main { margin-left: 200px; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+  #topbar {
+    height: 56px; background: #fff; border-bottom: 1px solid #e5e7eb;
+    display: flex; align-items: center; padding: 0 16px; font-weight: 600; flex: none;
+  }
+  #scroller { flex: 1; overflow: auto; background: #f3f4f6; padding: 16px; }
+  .row { background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 12px 14px; margin-bottom: 10px; font-size: 13px; line-height: 1.6; }
+  .row b { color: #3d7bff; }
+  .wide-table { width: 1600px; background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; margin-top: 16px; }
+  .wide-table table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  .wide-table th, .wide-table td { border: 1px solid #eef1f6; padding: 8px; white-space: nowrap; text-align: left; }
+  #readout {
+    position: fixed; right: 12px; top: 12px; background: #fff; border: 1px solid #d1d5db;
+    border-radius: 8px; padding: 8px 10px; font: 11px/1.7 ui-monospace, Consolas, monospace;
+    color: #333; z-index: 2; box-shadow: 0 2px 10px rgba(0,0,0,.12); max-width: 340px;
+  }
+</style>
+</head>
+<body>
+  <aside id="sidebar">
+    <h3>项目导航</h3>
+    <ul class="nav">
+      <li class="active">需求列表</li>
+      <li>需求详情</li>
+      <li>迭代计划</li>
+      <li>缺陷</li>
+    </ul>
+    <div class="note">固定侧边栏<br/>不参与滚动<br/>（模拟后台布局）</div>
+  </aside>
+
+  <main>
+    <header id="topbar">需求列表 — 滚动容器 #scroller（模拟 projm.gooddr.loc 的固定布局 + 内部滚动）</header>
+    <div id="scroller">
+      <div id="rows"></div>
+      <div class="wide-table"><table id="bigtable"></table></div>
+    </div>
+  </main>
+
+  <div id="readout">加载中…</div>
+
+  <script>
+    // 生成长列表 + 宽表格（模拟真实后台数据，纵向 + 横向均可滚动）
+    const rowsEl = document.getElementById('rows');
+    let html = '';
+    for (let i = 1; i <= 120; i++) {
+      html += '<div class="row"><b>需求 #' + i + '</b> — 这是一段足够长的需求描述文字，用于撑满高度、验证纵向自动滚动截取能否跨屏连续拼接。' +
+              '创建人：开发小组，状态：进行中，优先级：高，计划完成日期：2026-08-' + (i % 28 + 1) + '。</div>';
+    }
+    rowsEl.innerHTML = html;
+
+    const tb = document.getElementById('bigtable');
+    let tr = '<tr><th>ID</th>';
+    for (let c = 1; c <= 24; c++) tr += '<th>字段' + c + '</th>';
+    tr += '</tr>';
+    for (let r = 1; r <= 30; r++) {
+      tr += '<tr><td>' + r + '</td>';
+      for (let c = 1; c <= 24; c++) tr += '<td>行' + r + ' 列' + c + ' 的宽数据</td>';
+      tr += '</tr>';
+    }
+    tb.innerHTML = tr;
+
+    // 实时读数（覆盖层打开时会被盖住，供浏览器自动化读取）
+    const sc = document.getElementById('scroller');
+    setInterval(() => {
+      let d = {};
+      try { d = (window.__scrollshotDebug && window.__scrollshotDebug()) || {}; } catch (e) {}
+      document.getElementById('readout').textContent =
+        '容器: ' + (d.container || '—') +
+        '\nscrollTop: ' + d.scrollTop + ' / maxY: ' + d.maxY +
+        '\nscrollLeft: ' + d.scrollLeft + ' / maxX: ' + d.maxX +
+        '\n选区: ' + (d.selW ? d.selW + ' × ' + d.selH : '—') +
+        (d.dragging ? '\n[拖拽中]' : '') +
+        (d.resultMode ? '\n[已出图]' : '');
+    }, 120);
+  </script>
+
+  <!-- 关键：先设测试标记，再引入内容脚本 → 自动启动覆盖层 -->
+  <script>window.__CAPTURE_TEST__ = true;</script>
+  <script src="../content/content.js"></script>
+</body>
+</html>

@@ -1,0 +1,35 @@
+{
+  "manifest_version": 3,
+  "name": "滚动截图 · 拖拽即滚",
+  "version": "0.1.0",
+  "description": "拖拽框选截图：拖到视口/滚动容器边缘自动滚动，支持任意滚动容器（含嵌套容器）与横向滚动，专治固定布局后台页无法滚动截图的问题。",
+  "permissions": ["activeTab", "scripting", "storage", "downloads", "clipboardWrite"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "滚动截图（点击开始框选）",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": false
+  },
+  "commands": {
+    "toggle-capture": {
+      "suggested_key": {
+        "default": "Alt+Shift+S"
+      },
+      "description": "开始/退出滚动截图"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}

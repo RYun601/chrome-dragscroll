@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>回归测试：PerfectScrollbar 容器（overflow:hidden 纵向滚动 + 宽表格横向滚动）</title>
+<style>
+  /* 复刻 projm.gooddr.loc 真实页的「固定外壳 + PerfectScrollbar 内部滚动」：
+     window 不滚动；真正的纵向滚动容器 overflow:hidden（由 JS 接管滚动）；
+     内部还有一层仅横向溢出的宽表格容器（table-responsive）。 */
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; overflow: hidden; }
+  body { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; display: flex; }
+  #sidebar {
+    width: 216px; background: #111827; color: #9ca3af; padding: 16px; height: 100vh; flex: none;
+    display: flex; flex-direction: column;
+  }
+  #sidebar h3 { color: #fff; font-size: 14px; margin: 0 0 12px; }
+  #sidebar .nav { list-style: none; padding: 0; margin: 0; font-size: 13px; }
+  #sidebar .nav li { padding: 9px 10px; border-radius: 6px; margin-bottom: 4px; }
+  #sidebar .nav li.active { background: #3b82f6; color: #fff; }
+  main { flex: 1; height: 100vh; display: flex; flex-direction: column; min-width: 0; }
+  #topbar {
+    height: 56px; background: #fff; border-bottom: 1px solid #e5e7eb; flex: none;
+    display: flex; align-items: center; justify-content: space-between; padding: 0 20px;
+  }
+  #topbar .title { font-weight: 600; font-size: 15px; }
+  /* 关键 1：内容区 overflow:hidden —— PerfectScrollbar 类容器，只能 JS 滚动 */
+  #app-content { flex: 1; overflow: hidden; background: #f3f4f6; padding: 16px; position: relative; }
+  /* 关键 2：内部宽表格容器，仅横向溢出（overflow:auto + 宽表） */
+  .table-responsive { overflow: auto; background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; }
+  table.req { width: 100%; border-collapse: collapse; font-size: 13px; }
+  table.req th, table.req td { border: 1px solid #e5e7eb; padding: 9px 12px; text-align: left; white-space: nowrap; }
+  table.req th { background: #f9fafb; font-weight: 600; }
+  /* 页面足够高，让纵向溢出发生在 #app-content 上 */
+  .spacer { height: 40px; }
+</style>
+</head>
+<body>
+  <aside id="sidebar">
+    <h3>项目管理</h3>
+    <ul class="nav">
+      <li class="active">需求列表</li>
+      <li>需求详情</li>
+      <li>迭代计划</li>
+      <li>缺陷</li>
+      <li>报表</li>
+    </ul>
+  </aside>
+
+  <main>
+    <header id="topbar">
+      <span class="title">需求列表（PerfectScrollbar 复刻）</span>
+      <span><button class="btn" style="background:#3b82f6;color:#fff;border:none;border-radius:6px;padding:6px 14px;font-size:13px;">新建需求</button></span>
+    </header>
+    <div id="app-content">
+      <div class="toolbar" style="margin-bottom:12px;font-size:13px;">
+        <input placeholder="搜索需求…" style="border:1px solid #d1d5db;border-radius:6px;padding:6px 10px;" />
+        <input placeholder="状态筛选" style="border:1px solid #d1d5db;border-radius:6px;padding:6px 10px;" />
+      </div>
+      <div class="table-responsive">
+        <table class="req">
+          <thead><tr>
+            <th>序号</th><th>项目编号</th><th>需求ID</th><th>需求名称</th><th>产品线</th><th>需求类型</th><th>需求状态</th><th>开票状态</th><th>是否预付款</th><th>交付已延期</th><th>负责部门</th><th>操作</th>
+          </tr></thead>
+          <tbody id="rows"></tbody>
+        </table>
+      </div>
+      <div class="spacer"></div>
+    </div>
+  </main>
+
+  <script>
+    const tbody = document.getElementById('rows');
+    const names = ['张伟', '李娜', '王强', '赵敏', '刘洋', '陈静', '杨光', '黄磊'];
+    const status = ['进行中', '待评审', '已完成', '已延期'];
+    let html = '';
+    // 行数足够多，保证 #app-content 纵向溢出
+    for (let i = 1; i <= 60; i++) {
+      html += '<tr><td>' + i + '</td>' +
+        '<td>JKT2026' + String(1000 + i) + '</td>' +
+        '<td>JKT202608' + String(1000 + i) + '</td>' +
+        '<td>需求标题第 ' + i + ' 条：接入第三方数据源，支持批量导入与自动校验，同时提供导出与归档能力</td>' +
+        '<td>FW-大众</td>' +
+        '<td>正式需求</td>' +
+        '<td>' + status[i % status.length] + '</td>' +
+        '<td>已开票</td><td>是</td><td>否</td>' +
+        '<td>大众调研部</td>' +
+        '<td>详情 编辑 复制 删除</td></tr>';
+    }
+    tbody.innerHTML = html;
+  </script>
+
+  <!-- 引擎自测引入（装真实扩展后此段无效；不影响扩展注入） -->
+  <script>window.__CAPTURE_TEST__ = true;</script>
+  <script src="../content/content.js"></script>
+</body>
+</html>

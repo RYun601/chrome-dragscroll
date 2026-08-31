@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>窗口滚动测试页（window 直接滚动）</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body { font-family: system-ui, sans-serif; }
+  .bar { position: sticky; top: 0; height: 48px; background: #3d7bff; color: #fff;
+    display: flex; align-items: center; padding: 0 16px; font-weight: 600; }
+  .row { border-bottom: 1px solid #e5e7eb; padding: 18px 20px; font-size: 14px; background: #fff; }
+  .row:nth-child(odd) { background: #fafbfc; }
+  .row b { color: #3d7bff; }
+  .spacer { height: 60px; }
+</style>
+</head>
+<body>
+  <div class="bar">窗口滚动测试 — 页面高度约 15000px（window 是滚动容器）</div>
+  <div id="rows"></div>
+  <div class="spacer"></div>
+  <script>
+    const rows = document.getElementById('rows');
+    let html = '';
+    for (let i = 1; i <= 300; i++) {
+      html += '<div class="row"><b>第 ' + i + ' 行</b> — 这是一段用于撑满页面高度的文本，验证「窗口滚动」模式下拖到浏览器边缘能自动滚动并跨屏选区长截图。</div>';
+    }
+    rows.innerHTML = html;
+  </script>
+  <script>window.__CAPTURE_TEST__ = true;</script>
+  <script src="../content/content.js"></script>
+</body>
+</html>

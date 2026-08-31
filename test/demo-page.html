@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>需求列表（模拟 projm.gooddr.loc /project-requirement/list）</title>
+<style>
+  /* 复刻典型后台「固定外壳 + 内部滚动」布局：window 本身不滚动 */
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; overflow: hidden; }
+  body { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; display: flex; }
+  #sidebar {
+    width: 216px; background: #111827; color: #9ca3af; padding: 16px; height: 100vh; flex: none;
+    display: flex; flex-direction: column;
+  }
+  #sidebar h3 { color: #fff; font-size: 14px; margin: 0 0 12px; }
+  #sidebar .nav { list-style: none; padding: 0; margin: 0; font-size: 13px; }
+  #sidebar .nav li { padding: 9px 10px; border-radius: 6px; margin-bottom: 4px; }
+  #sidebar .nav li.active { background: #3b82f6; color: #fff; }
+  main { flex: 1; height: 100vh; display: flex; flex-direction: column; min-width: 0; }
+  #topbar {
+    height: 56px; background: #fff; border-bottom: 1px solid #e5e7eb; flex: none;
+    display: flex; align-items: center; justify-content: space-between; padding: 0 20px;
+  }
+  #topbar .title { font-weight: 600; font-size: 15px; }
+  #topbar .btn { background: #3b82f6; color: #fff; border: none; border-radius: 6px; padding: 6px 14px; font-size: 13px; }
+  /* 关键：内容区是真正的滚动容器 */
+  #scroller { flex: 1; overflow: auto; background: #f3f4f6; padding: 16px; }
+  .toolbar { margin-bottom: 12px; display: flex; gap: 8px; font-size: 13px; }
+  .toolbar input { border: 1px solid #d1d5db; border-radius: 6px; padding: 6px 10px; }
+  table.req { width: 100%; border-collapse: collapse; background: #fff; font-size: 13px; }
+  table.req th, table.req td { border: 1px solid #e5e7eb; padding: 9px 12px; text-align: left; white-space: nowrap; }
+  table.req th { background: #f9fafb; font-weight: 600; }
+  table.req td { max-width: 380px; overflow: hidden; text-overflow: ellipsis; }
+  .tag { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; }
+  .tag.go { background: #dcfce7; color: #15803d; }
+  .tag.wait { background: #fef3c7; color: #b45309; }
+</style>
+</head>
+<body>
+  <aside id="sidebar">
+    <h3>项目管理</h3>
+    <ul class="nav">
+      <li class="active">需求列表</li>
+      <li>需求详情</li>
+      <li>迭代计划</li>
+      <li>缺陷</li>
+      <li>报表</li>
+    </ul>
+  </aside>
+
+  <main>
+    <header id="topbar">
+      <span class="title">需求列表</span>
+      <span>
+        <button class="btn">新建需求</button>
+      </span>
+    </header>
+    <div id="scroller">
+      <div class="toolbar">
+        <input placeholder="搜索需求…" />
+        <input placeholder="状态筛选" />
+        <input placeholder="负责人" />
+      </div>
+      <table class="req">
+        <thead><tr><th>ID</th><th>标题</th><th>所属项目</th><th>负责人</th><th>状态</th><th>优先级</th><th>计划完成</th><th>创建时间</th></tr></thead>
+        <tbody id="rows"></tbody>
+      </table>
+    </div>
+  </main>
+
+  <script>
+    const tbody = document.getElementById('rows');
+    const names = ['张伟', '李娜', '王强', '赵敏', '刘洋', '陈静', '杨光', '黄磊'];
+    const status = ['进行中', '待评审', '已完成', '已延期'];
+    const prio = ['高', '中', '低'];
+    let html = '';
+    for (let i = 1; i <= 200; i++) {
+      const tag = i % 4 === 0 ? 'wait' : 'go';
+      html += '<tr><td>REQ-2026-' + String(1000 + i) + '</td>' +
+        '<td>需求标题第 ' + i + ' 条：接入第三方数据源，支持批量导入与自动校验，同时提供导出与归档能力</td>' +
+        '<td>项目-' + (i % 12 + 1) + '</td>' +
+        '<td>' + names[i % names.length] + '</td>' +
+        '<td><span class="tag ' + tag + '">' + status[i % status.length] + '</span></td>' +
+        '<td>' + prio[i % prio.length] + '</td>' +
+        '<td>2026-09-' + (i % 28 + 1) + '</td>' +
+        '<td>2026-08-' + (i % 30 + 1) + ' 10:' + String(i % 60).padStart(2, '0') + '</td></tr>';
+    }
+    tbody.innerHTML = html;
+  </script>
+
+  <!-- 引擎自测引入（装真实扩展后此段无效，可直接删除；不影响扩展注入） -->
+  <script>window.__CAPTURE_TEST__ = true;</script>
+  <script src="../content/content.js"></script>
+</body>
+</html>
