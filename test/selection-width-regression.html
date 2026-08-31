@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>选区宽度回归测试</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body { font: 14px system-ui, sans-serif; }
+  #scroller { width: 640px; height: 360px; overflow: auto; padding: 16px; border: 1px solid #999; }
+  #content { width: 1200px; height: 1800px; background: repeating-linear-gradient(#fff 0 39px, #e5e7eb 40px); }
+  #result { margin: 16px 0; white-space: pre; font-family: ui-monospace, Consolas, monospace; }
+  .pass { color: #15803d; }
+  .fail { color: #b91c1c; }
+</style>
+</head>
+<body>
+  <div id="scroller"><div id="content"></div></div>
+  <div id="result">测试准备中…</div>
+  <script>
+    window.__CAPTURE_TEST__ = true;
+  </script>
+  <script src="../content/content.js"></script>
+  <script>
+    (async () => {
+      const result = document.getElementById('result');
+      const fail = (message) => {
+        result.className = 'fail';
+        result.textContent = 'FAIL\n' + message;
+      };
+      try {
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        const layer = document.querySelector('#__scrollshot-host__').shadowRoot.querySelector('.ss-layer');
+        const scroller = document.getElementById('scroller');
+        const rect = scroller.getBoundingClientRect();
+        const x = rect.left + 80;
+        const y = rect.top + 80;
+        const edgeY = rect.bottom - 2;
+        layer.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, button: 0, pointerId: 1, clientX: x, clientY: y }));
+        layer.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, buttons: 1, pointerId: 1, clientX: x + 100, clientY: y }));
+        layer.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, buttons: 1, pointerId: 1, clientX: x + 100, clientY: edgeY }));
+        await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        const debug = window.__scrollshotDebug();
+        if (debug.axis !== 'v') throw new Error('未锁定纵向自动滚动');
+        if (scroller.scrollTop <= 0) throw new Error('未发生纵向滚动');
+        layer.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, button: 0, pointerId: 1, clientX: x + 100, clientY: edgeY }));
+        const event = window.__scrollshotEvents.find((item) => item.ev === 'drag-end');
+        if (!event) throw new Error('未产生 drag-end 事件');
+        if (Math.abs(event.rect.w - 100) > 2) {
+          throw new Error('期望宽度 100，实际为 ' + event.rect.w + '（内容宽度 ' + scroller.scrollWidth + '）');
+        }
+        result.className = 'pass';
+        result.textContent = 'PASS\n纵向滚动后选区宽度保持为 ' + event.rect.w;
+      } catch (error) {
+        fail(error.message || String(error));
+      }
+    })();
+  </script>
+</body>
+</html>

@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>选区高度回归测试</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body { font: 14px system-ui, sans-serif; }
+  #scroller { width: 360px; height: 640px; overflow: auto; padding: 16px; border: 1px solid #999; }
+  #content { width: 1800px; height: 1200px; background: repeating-linear-gradient(90deg, #fff 0 39px, #e5e7eb 40px); }
+  #result { margin: 16px 0; white-space: pre; font-family: ui-monospace, Consolas, monospace; }
+  .pass { color: #15803d; }
+  .fail { color: #b91c1c; }
+</style>
+</head>
+<body>
+  <div id="scroller"><div id="content"></div></div>
+  <div id="result">测试准备中…</div>
+  <script>window.__CAPTURE_TEST__ = true;</script>
+  <script src="../content/content.js"></script>
+  <script>
+    (async () => {
+      const result = document.getElementById('result');
+      try {
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        const layer = document.querySelector('#__scrollshot-host__').shadowRoot.querySelector('.ss-layer');
+        const scroller = document.getElementById('scroller');
+        const rect = scroller.getBoundingClientRect();
+        const x = rect.left + 80;
+        const y = rect.top + 80;
+        const edgeX = rect.right - 2;
+        layer.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, button: 0, pointerId: 2, clientX: x, clientY: y }));
+        layer.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, buttons: 1, pointerId: 2, clientX: x, clientY: y + 100 }));
+        layer.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, buttons: 1, pointerId: 2, clientX: edgeX, clientY: y + 100 }));
+        await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        const debug = window.__scrollshotDebug();
+        if (debug.axis !== 'h') throw new Error('未锁定横向自动滚动');
+        if (scroller.scrollLeft <= 0) throw new Error('未发生横向滚动');
+        layer.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, button: 0, pointerId: 2, clientX: edgeX, clientY: y + 100 }));
+        const event = window.__scrollshotEvents.find((item) => item.ev === 'drag-end');
+        if (!event) throw new Error('未产生 drag-end 事件');
+        if (Math.abs(event.rect.h - 100) > 2) {
+          throw new Error('期望高度 100，实际为 ' + event.rect.h + '（内容高度 ' + scroller.scrollHeight + '）');
+        }
+        result.className = 'pass';
+        result.textContent = 'PASS\n横向滚动后选区高度保持为 ' + event.rect.h;
+      } catch (error) {
+        result.className = 'fail';
+        result.textContent = 'FAIL\n' + (error.message || String(error));
+      }
+    })();
+  </script>
+</body>
+</html>

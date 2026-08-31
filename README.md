@@ -39,7 +39,7 @@ GoFullPage / Awesome Screenshot / FireShot / Full Page Screenshot 等**只会滚
 | 操作 | 效果 |
 | --- | --- |
 | 点击图标 / `Alt+Shift+S` | 进入框选（再按一次退出） |
-| 按住左键拖动 | 框选区域，左上角实时显示尺寸 |
+| 按住左键拖动 | 框选区域，宽高始终以手动拖出的范围为准，左上角实时显示尺寸 |
 | 继续拖到上/下/左/右边缘 | 自动滚动（容器或窗口，随光标所在位置自动识别），选区持续增长 |
 | 松开左键 | 自动滚动 + 逐屏截图 + 拼合，弹出结果面板 |
 | `Esc` | 任意时刻取消 |
@@ -59,6 +59,8 @@ GoFullPage / Awesome Screenshot / FireShot / Full Page Screenshot 等**只会滚
 ├─ docs\design.md         # 设计文档（含调研结论与已知限制）
 └─ test\
    ├─ capture-engine.html  # 引擎自测页（嵌套滚动容器，纵向+横向）
+   ├─ selection-width-regression.html # 选区宽度回归测试
+   ├─ selection-height-regression.html # 选区高度回归测试
    ├─ demo-page.html       # 简化复刻页（固定布局 + overflow:auto 内部滚动）
    ├─ perfect-scrollbar.html # 忠实复刻页（PerfectScrollbar：overflow:hidden 纵向滚动 + 宽表格横向滚动）
    └─ window-scroll.html   # 窗口滚动测试页

@@ -291,7 +291,6 @@
     state.lastMouse = { x: e.clientX, y: e.clientY };
     state.curContent.x = contentX(e.clientX);
     state.curContent.y = contentY(e.clientY);
-    clampToAxis();
     updateAutoScroll();
     updateSelection();
   }
@@ -312,21 +311,17 @@
     const sc = state.scroller;
     const w0 = Math.abs(state.curContent.x - state.startContent.x);
     const h0 = Math.abs(state.curContent.y - state.startContent.y);
-    // 未锁定方向时需手动拖出宽高；锁定纵向后宽度自动=全表宽（无需横向拖），锁定横向后高度自动=全表高
-    const tooSmall =
-      (state.axis !== 'v' ? w0 < 5 : false) ||
-      (state.axis !== 'h' ? h0 < 5 : false);
+    // 无论最终滚动方向如何，选区宽高都由用户手动拖出。
+    const tooSmall = w0 < 5 || h0 < 5;
     if (tooSmall) { teardown(); return; } // 视为取消
 
-    // 选区限制在容器内容范围内；单轴长图时另一维自动撑满容器全部内容（宽表格→全列，高表格→全行）
+    // 选区限制在容器内容范围内；自动滚动只延伸用户拖出的滚动方向。
     let rect = {
       x: Math.min(state.startContent.x, state.curContent.x),
       y: Math.min(state.startContent.y, state.curContent.y),
       w: w0,
       h: h0,
     };
-    if (state.axis === 'v') { rect.x = 0; rect.w = sc.contentW; }
-    else if (state.axis === 'h') { rect.y = 0; rect.h = sc.contentH; }
     rect.x = Math.max(0, rect.x);
     rect.y = Math.max(0, rect.y);
     rect.w = Math.min(rect.w, Math.max(0, sc.contentW - rect.x));
@@ -353,7 +348,7 @@
       }
       // 锁定瞬间即显示方向，不必等下一次指针移动
       if (els && els.hint) {
-        const pfx = state.axis === 'v' ? '纵向长图（全宽）· ' : '横向长图（全高）· ';
+        const pfx = state.axis === 'v' ? '纵向长图 · ' : '横向长图 · ';
         if (els.hint.textContent.indexOf(pfx) !== 0) {
           els.hint.textContent = pfx + els.hint.textContent;
         }
@@ -369,7 +364,6 @@
         state.curContent.x = contentX(state.lastMouse.x);
         state.curContent.y = contentY(state.lastMouse.y);
       }
-      clampToAxis();
       updateSelection();
     }
     state.rafId = requestAnimationFrame(tick);
@@ -388,21 +382,6 @@
     return 0;
   }
 
-  // 锁定方向后，把「非滚动方向」的坐标限制在容器当前可视范围内：
-  // 纵向长图 → 宽度 ≤ 一屏（clientW），保证单列瓦片；横向长图 → 高度 ≤ 一屏（clientH），保证单行瓦片。
-  // 这样选区永远是 1 维长条（纵向或横向），不会退化为 2D 矩形（2D 网格瓦片过多既容易截屏失败，产物也难以查看）。
-  function clampToAxis() {
-    const sc = state.scroller;
-    if (!sc || !state.vb) return;
-    if (state.axis === 'v') {
-      const lo = sc.scrollLeft, hi = sc.scrollLeft + sc.clientW;
-      state.curContent.x = clamp(state.curContent.x, lo, hi);
-    } else if (state.axis === 'h') {
-      const lo = sc.scrollTop, hi = sc.scrollTop + sc.clientH;
-      state.curContent.y = clamp(state.curContent.y, lo, hi);
-    }
-  }
-
   function updateAutoScroll() {
     const sc = state.scroller;
     if (!sc || !state.lastMouse || !state.vb) {
@@ -419,8 +398,8 @@
     state.autoScrollDir = { x: vx, y: vy };
     const dir = state.autoScrollDir;
     let hint = '';
-    if (state.axis === 'v') hint += '纵向长图（全宽）· ';
-    else if (state.axis === 'h') hint += '横向长图（全高）· ';
+    if (state.axis === 'v') hint += '纵向长图 · ';
+    else if (state.axis === 'h') hint += '横向长图 · ';
     if (dir.y > 0) hint += '↓ 向下滚动中 ';
     else if (dir.y < 0) hint += '↑ 向上滚动中 ';
     if (dir.x > 0) hint += '→ 向右滚动中 ';
@@ -433,9 +412,6 @@
     let y = Math.min(state.startContent.y, state.curContent.y);
     let w = Math.abs(state.curContent.x - state.startContent.x);
     let h = Math.abs(state.curContent.y - state.startContent.y);
-    // 单轴长图：纵向自动全宽（含所有列），横向自动全高（含所有行）
-    if (state.axis === 'v') { x = 0; w = state.scroller.contentW; }
-    else if (state.axis === 'h') { y = 0; h = state.scroller.contentH; }
     const sl = state.scroller.scrollLeft;
     const st = state.scroller.scrollTop;
     const sx = x - sl + state.vb.left;
