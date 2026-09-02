@@ -140,3 +140,23 @@ test('README documents the offscreen-only Blob URL permission', () => {
   assert.match(readme, /Blob URL/);
   assert.match(readme, /无 `?<all_urls>`?、无网络请求、无数据收集/);
 });
+
+test('options page labels every form control and exposes a main landmark', () => {
+  const html = read('options.html');
+  for (const id of ['edgeMargin', 'scrollSpeed', 'settleDelay', 'hideFixed', 'filenamePrefix']) {
+    assert.match(html, new RegExp('for=["' + String.fromCharCode(39) + ']' + id + '["' + String.fromCharCode(39) + ']'));
+  }
+  assert.match(html, /<main>/);
+  assert.match(html, /aria-live=["']polite["']/);
+});
+
+test('options and content settings are normalized', () => {
+  assert.match(read('options.js'), /normalizeSettings/);
+  assert.match(read('options.js'), /Math\.min/);
+  assert.match(read(path.join('content', 'content.js')), /normalizeSettings/);
+  assert.match(read(path.join('content', 'content.js')), /Math\.min/);
+});
+
+test('content script removes the document keydown listener', () => {
+  assert.match(read(path.join('content', 'content.js')), /removeEventListener\(['"]keydown/);
+});

@@ -31,6 +31,23 @@
     filenamePrefix: 'screenshot',
   };
 
+  function boundedNumber(value, min, max, fallback) {
+    const n = Number(value);
+    return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : fallback;
+  }
+
+  function normalizeSettings(raw = {}) {
+    const value = raw && typeof raw === 'object' ? raw : {};
+    return {
+      edgeMargin: boundedNumber(value.edgeMargin, 8, 200, DEFAULTS.edgeMargin),
+      scrollSpeed: boundedNumber(value.scrollSpeed, 100, 5000, DEFAULTS.scrollSpeed),
+      settleDelay: boundedNumber(value.settleDelay, 0, 2000, DEFAULTS.settleDelay),
+      hideFixed: value.hideFixed === true,
+      filenamePrefix: String(value.filenamePrefix || DEFAULTS.filenamePrefix)
+        .replace(/[\\/:*?"<>|\u0000-\u001f]/g, '_').trim().slice(0, 120) || DEFAULTS.filenamePrefix,
+    };
+  }
+
   let settings = { ...DEFAULTS };
   let host = null;   // 覆盖层宿主
   let root = null;   // shadow root
@@ -176,9 +193,9 @@
     if (IS_TEST) return;
     try {
       const s = await chrome.storage.sync.get(DEFAULTS);
-      settings = { ...DEFAULTS, ...s };
+      settings = normalizeSettings({ ...DEFAULTS, ...s });
     } catch (e) {
-      /* 忽略 */
+      settings = normalizeSettings(DEFAULTS);
     }
   }
 

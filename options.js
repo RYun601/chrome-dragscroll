@@ -11,28 +11,61 @@ const DEFAULTS = {
 
 const $ = (id) => document.getElementById(id);
 
+function boundedNumber(value, min, max, fallback) {
+  const n = Number(value);
+  return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : fallback;
+}
+
+function normalizeSettings(raw = {}) {
+  const value = raw && typeof raw === 'object' ? raw : {};
+  return {
+    edgeMargin: boundedNumber(value.edgeMargin, 8, 200, DEFAULTS.edgeMargin),
+    scrollSpeed: boundedNumber(value.scrollSpeed, 100, 5000, DEFAULTS.scrollSpeed),
+    settleDelay: boundedNumber(value.settleDelay, 0, 2000, DEFAULTS.settleDelay),
+    hideFixed: value.hideFixed === true,
+    filenamePrefix: String(value.filenamePrefix || DEFAULTS.filenamePrefix)
+      .replace(/[\\/:*?"<>|\u0000-\u001f]/g, '_').trim().slice(0, 120) || DEFAULTS.filenamePrefix,
+  };
+}
+
+function applySettings(value) {
+  $('edgeMargin').value = value.edgeMargin;
+  $('scrollSpeed').value = value.scrollSpeed;
+  $('settleDelay').value = value.settleDelay;
+  $('hideFixed').checked = value.hideFixed;
+  $('filenamePrefix').value = value.filenamePrefix;
+}
+
+function setStatus(message) {
+  $('status').textContent = message;
+}
+
 async function load() {
-  const s = await chrome.storage.sync.get(DEFAULTS);
-  const v = { ...DEFAULTS, ...s };
-  $('edgeMargin').value = v.edgeMargin;
-  $('scrollSpeed').value = v.scrollSpeed;
-  $('settleDelay').value = v.settleDelay;
-  $('hideFixed').checked = !!v.hideFixed;
-  $('filenamePrefix').value = v.filenamePrefix;
+  try {
+    const s = await chrome.storage.sync.get(DEFAULTS);
+    applySettings(normalizeSettings({ ...DEFAULTS, ...s }));
+  } catch (err) {
+    applySettings(normalizeSettings(DEFAULTS));
+    setStatus('读取设置失败：' + (err.message || err));
+  }
 }
 
 async function save() {
-  const v = {
-    edgeMargin: parseInt($('edgeMargin').value, 10) || DEFAULTS.edgeMargin,
-    scrollSpeed: parseInt($('scrollSpeed').value, 10) || DEFAULTS.scrollSpeed,
-    settleDelay: parseInt($('settleDelay').value, 10) || DEFAULTS.settleDelay,
+  const v = normalizeSettings({
+    edgeMargin: $('edgeMargin').value,
+    scrollSpeed: $('scrollSpeed').value,
+    settleDelay: $('settleDelay').value,
     hideFixed: $('hideFixed').checked,
-    filenamePrefix: ($('filenamePrefix').value.trim() || DEFAULTS.filenamePrefix),
-  };
-  await chrome.storage.sync.set(v);
-  const st = $('status');
-  st.textContent = '已保存 ✓';
-  setTimeout(() => (st.textContent = ''), 1600);
+    filenamePrefix: $('filenamePrefix').value,
+  });
+  applySettings(v);
+  try {
+    await chrome.storage.sync.set(v);
+    setStatus('已保存 ✓');
+    setTimeout(() => setStatus(''), 1600);
+  } catch (err) {
+    setStatus('保存失败：' + (err.message || err));
+  }
 }
 
 document.addEventListener('DOMContentLoaded', load);
