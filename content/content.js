@@ -70,6 +70,20 @@
   // ---------- 工具 ----------
   const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 
+  function validateOutputBudget(cssW, cssH, scale) {
+    const outW = Math.max(1, Math.round(cssW * scale));
+    const outH = Math.max(1, Math.round(cssH * scale));
+    if (outW > 32000 || outH > 32000) {
+      throw new Error('截图尺寸 ' + outW + ' × ' + outH + ' 超出浏览器单边限制 32000px');
+    }
+    if (outW * outH > MAX_OUTPUT_PIXELS) {
+      throw new Error('输出 ' + outW + ' × ' + outH + ' 像素过大，请缩小选区或降低浏览器缩放');
+    }
+    return { outW, outH };
+  }
+
+  if (IS_TEST) window.__scrollshotTestApi = { validateOutputBudget };
+
   function createCaptureSession(sc, hostAtStart) {
     const id = ++state.captureSerial;
     const origin = state.dragOriginalScroll || { x: sc.scrollLeft, y: sc.scrollTop };
@@ -589,27 +603,7 @@
     const clientW = sc.clientW;
     const clientH = sc.clientH;
     const vb = sc.viewBox();
-
-    // 探测一张图以确定像素比
-    let probe = null;
-    const first = await requestCapture(session);
-    if (!isSessionCurrent(session)) return null;
-    if (first) {
-      probe = await loadBitmap(first);
-      if (!isSessionCurrent(session)) {
-        if (probe.close) probe.close();
-        return null;
-      }
-    }
-    const imgScale = probe ? probe.width / Math.max(1, window.innerWidth) : window.devicePixelRatio || 1;
-    const outW = Math.max(1, Math.round(R.w * imgScale));
-    const outH = Math.max(1, Math.round(R.h * imgScale));
-    if (outW > 32000 || outH > 32000) throw new Error('截图尺寸超出浏览器限制（32000px），请缩小选区');
-
-    const canvas = document.createElement('canvas');
-    canvas.width = outW;
-    canvas.height = outH;
-    const ctx = canvas.getContext('2d');
+    let canvas = null;
 
     setInstantScroll(sc, true);
     session.instantScroll = true;
@@ -626,30 +620,74 @@
         sc.setScroll(Math.min(t.sx, sc.maxX), Math.min(t.sy, sc.maxY));
         return isSessionCurrent(session);
       };
-      // 捕获单个瓦片并绘制到 canvas；取消时返回 null。
-      const captureTile = async (t, isRetry) => {
+
+      // 第一块真实瓦片既确定截图像素比，也直接绘制到输出；不再发出仅用于 DPR 的 probe。
+      const captureTileData = async (t) => {
         if (!isSessionCurrent(session) || !(await settle(session)) || !isSessionCurrent(session)) return null;
         const dataUrl = await requestCapture(session);
         if (!isSessionCurrent(session)) return null;
-        if (!dataUrl) return IS_TEST; // 测试模式跳过瓦片
-        const bmp = await loadBitmap(dataUrl);
+        return dataUrl;
+      };
+
+      if (!tiles.length || !scrollTo(tiles[0])) return null;
+      const firstDataUrl = await captureTileData(tiles[0]);
+      if (!isSessionCurrent(session)) return null;
+      if (!firstDataUrl && !IS_TEST) throw new Error('首块区域未能捕获，请重试');
+
+      let firstBitmap = null;
+      if (firstDataUrl) {
+        firstBitmap = await loadBitmap(firstDataUrl);
         if (!isSessionCurrent(session)) {
-          if (bmp.close) bmp.close();
+          if (firstBitmap.close) firstBitmap.close();
           return null;
         }
-        const s = bmp.width / Math.max(1, window.innerWidth);
+      }
+      const hooks = IS_TEST ? window.__CAPTURE_TEST_HOOKS__ : null;
+      const requestedScale = hooks && Number(hooks.captureScale);
+      const imgScale = firstBitmap ? firstBitmap.width / Math.max(1, window.innerWidth)
+        : (Number.isFinite(requestedScale) && requestedScale > 0 ? requestedScale : (window.devicePixelRatio || 1));
+      const { outW, outH } = validateOutputBudget(R.w, R.h, imgScale);
+      canvas = document.createElement('canvas');
+      canvas.width = outW;
+      canvas.height = outH;
+      const ctx = canvas.getContext('2d');
+
+      const drawTile = (t, bmp) => {
+        if (!bmp || !isSessionCurrent(session)) return false;
         const cLeft = Math.max(R.x, t.sx);
         const cRight = Math.min(R.x + R.w, t.sx + clientW);
         const cTop = Math.max(R.y, t.sy);
         const cBottom = Math.min(R.y + R.h, t.sy + clientH);
         if (cLeft < cRight && cTop < cBottom) {
-          const srcX = (vb.left + (cLeft - sc.scrollLeft)) * s;
-          const srcY = (vb.top + (cTop - sc.scrollTop)) * s;
-          const srcW = (cRight - cLeft) * s;
-          const srcH = (cBottom - cTop) * s;
-          ctx.drawImage(bmp, srcX, srcY, srcW, srcH, (cLeft - R.x) * s, (cTop - R.y) * s, srcW, srcH);
+          const srcX = (vb.left + (cLeft - sc.scrollLeft)) * imgScale;
+          const srcY = (vb.top + (cTop - sc.scrollTop)) * imgScale;
+          const srcW = (cRight - cLeft) * imgScale;
+          const srcH = (cBottom - cTop) * imgScale;
+          ctx.drawImage(bmp, srcX, srcY, srcW, srcH, (cLeft - R.x) * imgScale, (cTop - R.y) * imgScale, srcW, srcH);
         }
+        return isSessionCurrent(session);
+      };
+
+      if (firstBitmap) {
+        const drawn = drawTile(tiles[0], firstBitmap);
+        if (firstBitmap.close) firstBitmap.close();
+        if (!drawn) return null;
+      }
+      if (!(await waitForSession(session, 30))) return null;
+
+      // 捕获单个后续瓦片并绘制到 canvas；取消时返回 null。
+      const captureTile = async (t, isRetry) => {
+        const dataUrl = await captureTileData(t);
+        if (!isSessionCurrent(session)) return null;
+        if (!dataUrl) return IS_TEST; // 测试模式跳过真实 bitmap
+        const bmp = await loadBitmap(dataUrl);
+        if (!isSessionCurrent(session)) {
+          if (bmp.close) bmp.close();
+          return null;
+        }
+        const drawn = drawTile(t, bmp);
         if (bmp.close) bmp.close();
+        if (!drawn) return null;
         // 捕获成功后稍作喘息，降低 captureVisibleTab 连续调用失败率
         if (!isRetry && !(await waitForSession(session, 30))) return null;
         return true;
@@ -657,7 +695,7 @@
 
       // 第 1 遍：尽量捕获全部瓦片；失败的不立即中止，暂存待重试
       const failed = [];
-      for (const t of tiles) {
+      for (const t of tiles.slice(1)) {
         if (!scrollTo(t)) return null;
         const captured = await captureTile(t, false);
         if (captured === null || !isSessionCurrent(session)) return null;
@@ -684,7 +722,6 @@
         setInstantScroll(sc, false);
         session.instantScroll = false;
       }
-      if (probe && probe.close) probe.close();
     }
     return isSessionCurrent(session) ? canvas : null;
   }
@@ -728,6 +765,10 @@
     if (!isSessionCurrent(session)) return null;
     if (IS_TEST) {
       const hooks = window.__CAPTURE_TEST_HOOKS__;
+      // 测试页可声明 DPR，供首瓦片后的输出预算路径使用；绝不访问 Chrome API。
+      if (hooks && Number.isFinite(Number(hooks.captureScale))) {
+        hooks.captureCount = Number(hooks.captureCount || 0) + 1;
+      }
       if (!hooks || typeof hooks.requestCapture !== 'function') return null;
       const dataUrl = await hooks.requestCapture();
       return isSessionCurrent(session) ? dataUrl : null;

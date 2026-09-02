@@ -43,6 +43,18 @@ test('content script exposes JSON-safe download and capture cancellation message
   assert.match(content, /128 MiB|128 \* 1024 \* 1024/);
 });
 
+test('capture path has queue, active-tab guard and output budget', () => {
+  const background = read('background.js');
+  const content = read(path.join('content', 'content.js'));
+  assert.match(background, /CAPTURE_VISIBLE/);
+  assert.match(background, /captureQueue/);
+  assert.match(background, /tabs\.get/);
+  assert.match(background, /550/);
+  assert.match(content, /MAX_OUTPUT_PIXELS/);
+  assert.match(content, /outW \* outH/);
+  assert.match(content, /captureId/);
+});
+
 function loadBackgroundForDownloadTest() {
   const sentMessages = [];
   const downloadCalls = [];

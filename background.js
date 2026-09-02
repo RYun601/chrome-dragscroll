@@ -8,6 +8,13 @@ const DOWNLOAD_PORT_NAME = 'scrollshot-download';
 const DOWNLOAD_CHUNK_BYTES = 192 * 1024;
 const MAX_DOWNLOAD_BYTES = 128 * 1024 * 1024;
 const DOWNLOAD_STORAGE_PREFIX = 'scrollshot-download:';
+// captureVisibleTab 对整个浏览器共享配额；所有标签和重试共用这一条队列。
+const CAPTURE_INTERVAL_MS = 550;
+const captureQueue = [];
+const cancelledCaptures = new Set();
+let capturePump = Promise.resolve();
+let lastCaptureAt = 0;
+let activeCaptureKey = null;
 
 const downloadSessions = new Map();
 const downloadIds = new Map();
@@ -15,6 +22,86 @@ let creatingOffscreen = null;
 
 function lastErrorMessage(fallback) {
   return chrome.runtime.lastError ? chrome.runtime.lastError.message : fallback;
+}
+
+function captureKey(tabId, captureId) {
+  return String(tabId) + ':' + String(captureId);
+}
+
+function captureCancelledError() {
+  return new Error('截图会话已取消');
+}
+
+function cancelCapture(tabId, captureId) {
+  if (tabId == null || typeof captureId !== 'string' || !captureId) return;
+  const key = captureKey(tabId, captureId);
+  cancelledCaptures.add(key);
+
+  // 尚未开始的请求无需等待队列轮到它们；立即拒绝并从队列移除。
+  for (let index = captureQueue.length - 1; index >= 0; index -= 1) {
+    const item = captureQueue[index];
+    if (item.key !== key) continue;
+    captureQueue.splice(index, 1);
+    item.reject(captureCancelledError());
+  }
+  // 没有正在等待/执行的同一会话请求时，取消标记已经没有用途。
+  if (activeCaptureKey !== key) cancelledCaptures.delete(key);
+}
+
+function captureVisibleTab(windowId) {
+  return new Promise((resolve, reject) => {
+    try {
+      chrome.tabs.captureVisibleTab(windowId, { format: 'png' }, (dataUrl) => {
+        const error = lastErrorMessage('');
+        if (error) reject(new Error(error));
+        else if (typeof dataUrl !== 'string' || !dataUrl) reject(new Error('浏览器未返回截图数据'));
+        else resolve(dataUrl);
+      });
+    } catch (error) {
+      reject(error);
+    }
+  });
+}
+
+function queueVisibleCapture({ tabId, windowId, captureId }) {
+  const key = captureKey(tabId, captureId);
+  return new Promise((resolve, reject) => {
+    captureQueue.push({ key, tabId, windowId, captureId, resolve, reject });
+    pumpCaptureQueue();
+  });
+}
+
+function pumpCaptureQueue() {
+  capturePump = capturePump.then(async () => {
+    while (captureQueue.length) {
+      const item = captureQueue.shift();
+      activeCaptureKey = item.key;
+      try {
+        if (cancelledCaptures.has(item.key)) throw captureCancelledError();
+        const wait = Math.max(0, CAPTURE_INTERVAL_MS - (Date.now() - lastCaptureAt));
+        if (wait) await new Promise((resolve) => setTimeout(resolve, wait));
+        if (cancelledCaptures.has(item.key)) throw captureCancelledError();
+
+        // 不能只信任消息 sender：排队期间用户可能已切换标签或移动了窗口。
+        const tab = await chrome.tabs.get(item.tabId);
+        if (!tab || tab.windowId !== item.windowId || !tab.active) {
+          throw new Error('原截图标签已不再激活');
+        }
+        if (cancelledCaptures.has(item.key)) throw captureCancelledError();
+        lastCaptureAt = Date.now();
+        item.resolve(await captureVisibleTab(item.windowId));
+      } catch (error) {
+        item.reject(error instanceof Error ? error : new Error(String(error)));
+      } finally {
+        cancelledCaptures.delete(item.key);
+        activeCaptureKey = null;
+      }
+    }
+  }).catch((error) => {
+    // 每个条目已独立 reject；此处必须吞掉意外异常，保证下一次入队仍可启动。
+    console.error('[scrollshot] 截图队列异常：', error);
+  });
+  return capturePump;
 }
 
 function isValidRequestId(value) {
@@ -406,16 +493,20 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
   if (!msg || !sender || !sender.tab) return false;
   if (msg.type === 'CAPTURE_VISIBLE') {
-    chrome.tabs.captureVisibleTab(sender.tab.windowId, { format: 'png' }, (dataUrl) => {
-      const error = lastErrorMessage('');
-      if (error) {
-        console.error('[scrollshot] captureVisibleTab 失败：', error);
-        sendResponse({ error });
-        return;
-      }
-      sendResponse({ dataUrl });
-    });
+    const tabId = sender.tab.id;
+    const windowId = sender.tab.windowId;
+    if (tabId == null || windowId == null || typeof msg.captureId !== 'string' || !msg.captureId) {
+      sendResponse({ error: '截图请求参数无效' });
+      return false;
+    }
+    queueVisibleCapture({ tabId, windowId, captureId: msg.captureId })
+      .then((dataUrl) => sendResponse({ dataUrl }))
+      .catch((error) => sendResponse({ error: error && error.message ? error.message : String(error) }));
     return true;
+  }
+  if (msg.type === 'CAPTURE_CANCEL') {
+    cancelCapture(sender.tab.id, msg.captureId);
+    return false;
   }
   return false;
 });

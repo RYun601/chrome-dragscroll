@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>截图输出预算回归测试</title>
+<style>body { margin: 24px; font: 14px/1.6 system-ui, sans-serif; } pre { white-space: pre-wrap; }</style>
+</head>
+<body>
+<script>
+  window.__CAPTURE_TEST__ = true;
+  window.__CAPTURE_TEST_HOOKS__ = { captureScale: 2, captureCount: 0 };
+</script>
+<script src="../content/content.js"></script>
+<script>
+  const result = document.body.appendChild(document.createElement('pre'));
+  try {
+    if (!window.__scrollshotTestApi || typeof window.__scrollshotTestApi.validateOutputBudget !== 'function') throw new Error('缺少输出预算测试 API');
+    let rejected = false;
+    try { window.__scrollshotTestApi.validateOutputBudget(16000, 16000, 2); } catch (error) { rejected = true; }
+    if (!rejected) throw new Error('高 DPR 超大输出未被拒绝');
+    result.textContent = 'PASS\n高 DPR 超大输出已被拒绝';
+  } catch (error) {
+    result.textContent = 'FAIL\n' + (error.message || error);
+  }
+</script>
+</body>
+</html>
