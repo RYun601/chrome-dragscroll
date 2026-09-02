@@ -16,7 +16,8 @@
   if (window.__SCROLLSHOT_INJECTED__) return;
   window.__SCROLLSHOT_INJECTED__ = true;
 
-  const IS_TEST = typeof chrome === 'undefined' || !chrome.runtime || !chrome.runtime.id;
+  // 测试页即使运行在带有 chrome 对象的环境中，也必须显式进入无真实截图模式。
+  const IS_TEST = window.__CAPTURE_TEST__ === true || typeof chrome === 'undefined' || !chrome.runtime || !chrome.runtime.id;
   const DOWNLOAD_CHUNK_BYTES = 192 * 1024;
   const MAX_OUTPUT_PIXELS = 64_000_000;
   const MAX_OUTPUT_BYTES = 128 * 1024 * 1024;
@@ -34,6 +35,7 @@
   let host = null;   // 覆盖层宿主
   let root = null;   // shadow root
   let els = null;    // 覆盖层内部元素引用
+  let eventsBound = false;
 
   // 生命周期事件日志（调试/自动化验证用）
   const events = [];
@@ -59,10 +61,77 @@
     lastCanvas: null,   // 最近一次结果 canvas（保存/复制时按需取图）
     thumbUrl: null,     // 结果缩略图 objectURL（teardown 时回收）
     download: null,     // 当前 PNG 下载传输会话
+    captureSession: null,
+    captureSerial: 0,
+    capturing: false,
+    dragOriginalScroll: null,
   };
 
   // ---------- 工具 ----------
   const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+
+  function createCaptureSession(sc, hostAtStart) {
+    const id = ++state.captureSerial;
+    const origin = state.dragOriginalScroll || { x: sc.scrollLeft, y: sc.scrollTop };
+    return {
+      id,
+      captureId: 'capture-' + id,
+      cancelled: false,
+      cleaned: false,
+      scroller: sc,
+      originalScroll: { x: origin.x, y: origin.y },
+      hiddenElements: [],
+      hostAtStart,
+      abortController: new AbortController(),
+      instantScroll: false,
+    };
+  }
+
+  function isSessionCurrent(session) {
+    return !!session && !session.cancelled && state.captureSession === session && host === session.hostAtStart;
+  }
+
+  function cleanupCaptureSession(session) {
+    if (!session || session.cleaned) return;
+    session.cleaned = true;
+    if (session.instantScroll) {
+      setInstantScroll(session.scroller, false);
+      session.instantScroll = false;
+    }
+    restoreElements(session.hiddenElements);
+    session.hiddenElements = [];
+    session.scroller.setScroll(session.originalScroll.x, session.originalScroll.y);
+    if (state.captureSession === session) {
+      state.captureSession = null;
+      state.capturing = false;
+    }
+  }
+
+  function cancelCaptureSession(reason) {
+    const session = state.captureSession;
+    if (!session || session.cleaned) return;
+    session.cancelled = true;
+    try { session.abortController.abort(reason); } catch (err) { /* 忽略 */ }
+    if (session.captureId && !IS_TEST) sendMessage({ type: CAPTURE_CANCEL, captureId: session.captureId });
+    cleanupCaptureSession(session);
+  }
+
+  function waitForSession(session, ms) {
+    return new Promise((resolve) => {
+      if (!isSessionCurrent(session)) { resolve(false); return; }
+      let done = false;
+      const finish = (current) => {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        session.abortController.signal.removeEventListener('abort', onAbort);
+        resolve(current && isSessionCurrent(session));
+      };
+      const onAbort = () => finish(false);
+      const timer = setTimeout(() => finish(true), ms);
+      session.abortController.signal.addEventListener('abort', onAbort, { once: true });
+    });
+  }
 
   function sendMessage(msg) {
     if (IS_TEST) return Promise.resolve({});
@@ -269,11 +338,13 @@
 
   function onPointerDown(e) {
     if (state.resultMode) return; // 结果面板打开时忽略
+    if (state.capturing) return; // 截图会话尚未结束时不接受新的拖拽
     if (e.button !== 0) return;
     e.preventDefault();
     e.stopPropagation();
 
     state.scroller = makeScroller(findScroller(elementUnderPoint(e.clientX, e.clientY)));
+    state.dragOriginalScroll = { x: state.scroller.scrollLeft, y: state.scroller.scrollTop };
     state.vb = state.scroller.viewBox();
     state.startContent = { x: contentX(e.clientX), y: contentY(e.clientY) };
     state.curContent = { ...state.startContent };
@@ -336,7 +407,10 @@
     rect.h = Math.min(rect.h, Math.max(0, sc.contentH - rect.y));
     if (rect.w < 5 || rect.h < 5) { teardown(); return; }
     logEvent({ ev: 'drag-end', rect });
-    runCapture(sc, rect);
+    const session = createCaptureSession(sc, host);
+    state.captureSession = session;
+    state.capturing = true;
+    runCapture(session, rect);
   }
 
   // 自动滚动主循环
@@ -455,15 +529,15 @@
   }
 
   // ---------- 截屏拼合 ----------
-  async function runCapture(sc, rect) {
-    const origX = sc.scrollLeft;
-    const origY = sc.scrollTop;
-    const hidden = settings.hideFixed ? hideFixedElements(sc, rect) : [];
+  async function runCapture(session, rect) {
+    if (!isSessionCurrent(session)) return;
+    const sc = session.scroller;
+    session.hiddenElements = settings.hideFixed ? hideFixedElements(sc, rect) : [];
 
     // 截图期间：透明化覆盖层暗色蒙层 + 隐藏选区框（含 9999px 投影）与浮标。
     // 否则每块瓦片都会带上暗色蒙层（整体偏色）与选区阴影（行间亮度不一致），
     // 巨型投影还可能导致 captureVisibleTab 返回黑帧。
-    if (els) {
+    if (isSessionCurrent(session) && els) {
       els.layer.style.background = 'transparent';
       els.sel.style.display = 'none';
       els.sizeTip.style.display = 'none';
@@ -475,29 +549,31 @@
 
     logEvent({ ev: 'capture-start', rect, container: sc.isWindow ? 'window' : sc.el.id || sc.el.tagName });
     try {
-      const canvas = await captureRegion(sc, rect);
-      sc.setScroll(origX, origY);
+      const canvas = await captureRegion(session, rect);
+      if (!canvas || !isSessionCurrent(session)) return;
       logEvent({ ev: 'capture-done', w: canvas.width, h: canvas.height });
-      // 捕获期间可能被 teardown（Esc / 再点图标），els 可能已为 null，需判空
-      if (!els) return;
+      // 捕获期间可能被 teardown（Esc / 再点图标），旧会话不可写入新覆盖层。
+      if (!isSessionCurrent(session) || !els) return;
       els.layer.style.background = '';
-      showResult(canvas);
+      showResult(session, canvas);
     } catch (err) {
-      sc.setScroll(origX, origY);
+      if (!isSessionCurrent(session)) return;
       console.error('[scrollshot] 截图失败：', err);
       logEvent({ ev: 'capture-error', error: String((err && err.message) || err) });
-      if (els) {
+      if (isSessionCurrent(session) && els) {
         els.layer.style.background = '';
         els.layer.style.cursor = 'default';
         els.badge.style.display = 'none';
-        showError(String((err && err.message) || err));
+        showError(session, String((err && err.message) || err));
       }
     } finally {
-      restoreElements(hidden);
+      cleanupCaptureSession(session);
     }
   }
 
-  async function captureRegion(sc, R) {
+  async function captureRegion(session, R) {
+    if (!isSessionCurrent(session)) return null;
+    const sc = session.scroller;
     if (R.w * R.h > 250_000_000) throw new Error('选区过大，请缩小选区');
     const clientW = sc.clientW;
     const clientH = sc.clientH;
@@ -505,9 +581,14 @@
 
     // 探测一张图以确定像素比
     let probe = null;
-    const first = await requestCapture();
+    const first = await requestCapture(session);
+    if (!isSessionCurrent(session)) return null;
     if (first) {
       probe = await loadBitmap(first);
+      if (!isSessionCurrent(session)) {
+        if (probe.close) probe.close();
+        return null;
+      }
     }
     const imgScale = probe ? probe.width / Math.max(1, window.innerWidth) : window.devicePixelRatio || 1;
     const outW = Math.max(1, Math.round(R.w * imgScale));
@@ -520,6 +601,7 @@
     const ctx = canvas.getContext('2d');
 
     setInstantScroll(sc, true);
+    session.instantScroll = true;
     try {
       const cols = [];
       for (let sx = Math.max(0, R.x); sx < R.x + R.w; sx += clientW) cols.push(sx);
@@ -528,13 +610,22 @@
       const tiles = [];
       for (const sy of rows) for (const sx of cols) tiles.push({ sx, sy });
 
-      const scrollTo = (t) => sc.setScroll(Math.min(t.sx, sc.maxX), Math.min(t.sy, sc.maxY));
-      // 捕获单个瓦片并绘制到 canvas；成功返回 true
+      const scrollTo = (t) => {
+        if (!isSessionCurrent(session)) return false;
+        sc.setScroll(Math.min(t.sx, sc.maxX), Math.min(t.sy, sc.maxY));
+        return isSessionCurrent(session);
+      };
+      // 捕获单个瓦片并绘制到 canvas；取消时返回 null。
       const captureTile = async (t, isRetry) => {
-        await settle();
-        const dataUrl = await requestCapture();
+        if (!isSessionCurrent(session) || !(await settle(session)) || !isSessionCurrent(session)) return null;
+        const dataUrl = await requestCapture(session);
+        if (!isSessionCurrent(session)) return null;
         if (!dataUrl) return IS_TEST; // 测试模式跳过瓦片
         const bmp = await loadBitmap(dataUrl);
+        if (!isSessionCurrent(session)) {
+          if (bmp.close) bmp.close();
+          return null;
+        }
         const s = bmp.width / Math.max(1, window.innerWidth);
         const cLeft = Math.max(R.x, t.sx);
         const cRight = Math.min(R.x + R.w, t.sx + clientW);
@@ -549,64 +640,92 @@
         }
         if (bmp.close) bmp.close();
         // 捕获成功后稍作喘息，降低 captureVisibleTab 连续调用失败率
-        if (!isRetry) await new Promise((r) => setTimeout(r, 30));
+        if (!isRetry && !(await waitForSession(session, 30))) return null;
         return true;
       };
 
       // 第 1 遍：尽量捕获全部瓦片；失败的不立即中止，暂存待重试
       const failed = [];
       for (const t of tiles) {
-        scrollTo(t);
-        if (!(await captureTile(t, false))) failed.push(t);
+        if (!scrollTo(t)) return null;
+        const captured = await captureTile(t, false);
+        if (captured === null || !isSessionCurrent(session)) return null;
+        if (!captured) failed.push(t);
       }
 
       // 第 2 遍：对失败瓦片「先滚走再滚回」强制合成器出帧，再重试捕获
       if (failed.length) {
-        await new Promise((r) => setTimeout(r, 120));
+        if (!(await waitForSession(session, 120))) return null;
         for (const t of failed) {
+          if (!isSessionCurrent(session)) return null;
           sc.setScroll(Math.min(t.sx, sc.maxX), Math.min(sc.maxY, t.sy + clientH * 2));
-          await settle();
-          scrollTo(t);
-          if (!(await captureTile(t, true))) {
+          if (!(await settle(session)) || !scrollTo(t)) return null;
+          const captured = await captureTile(t, true);
+          if (captured === null || !isSessionCurrent(session)) return null;
+          if (!captured) {
             const why = state.lastCaptureError ? `（浏览器返回：${state.lastCaptureError}）` : '';
             throw new Error(`截图过程中有 ${failed.length} 块区域未能捕获${why}，请重试或调大「滚动稳定等待」`);
           }
         }
       }
     } finally {
-      setInstantScroll(sc, false);
+      if (session.instantScroll && !session.cleaned) {
+        setInstantScroll(sc, false);
+        session.instantScroll = false;
+      }
       if (probe && probe.close) probe.close();
     }
-    return canvas;
+    return isSessionCurrent(session) ? canvas : null;
   }
 
-  function settle() {
+  function settle(session) {
     return new Promise((resolve) => {
+      if (!isSessionCurrent(session)) { resolve(false); return; }
       let done = false;
-      const finish = () => { if (!done) { done = true; clearTimeout(timer); resolve(); } };
+      const finish = () => {
+        if (!done) {
+          done = true;
+          clearTimeout(timer);
+          session.abortController.signal.removeEventListener('abort', onAbort);
+          resolve(isSessionCurrent(session));
+        }
+      };
+      const onAbort = () => finish();
       // rAF 在标签页后台/不可见时会被节流甚至暂停，加超时兜底避免截图卡死
       const timer = setTimeout(finish, Math.max(50, settings.settleDelay * 6));
-      requestAnimationFrame(() =>
-        requestAnimationFrame(() => setTimeout(finish, settings.settleDelay))
-      );
+      requestAnimationFrame(() => {
+        if (!isSessionCurrent(session)) { finish(); return; }
+        requestAnimationFrame(() => setTimeout(finish, settings.settleDelay));
+      });
+      session.abortController.signal.addEventListener('abort', onAbort, { once: true });
     });
   }
 
-  async function requestCapture() {
-    if (IS_TEST) return null;
+  async function requestCapture(session) {
+    if (!isSessionCurrent(session)) return null;
+    if (IS_TEST) {
+      const hooks = window.__CAPTURE_TEST_HOOKS__;
+      if (!hooks || typeof hooks.requestCapture !== 'function') return null;
+      const dataUrl = await hooks.requestCapture();
+      return isSessionCurrent(session) ? dataUrl : null;
+    }
     // captureVisibleTab 偶发失败/返回空（连续快速调用、合成器忙碌、含 backdrop-filter 等），
     // 指数退避重试；仍失败时记录真实错误便于诊断
     const delays = [150, 250, 400, 650, 1000];
     for (const d of delays) {
-      const resp = await sendMessage({ type: 'CAPTURE_VISIBLE' });
+      const resp = await sendMessage({ type: 'CAPTURE_VISIBLE', captureId: session.captureId });
+      if (!isSessionCurrent(session)) return null;
       if (resp && resp.dataUrl) return resp.dataUrl;
       const err = resp && resp.error ? resp.error : null;
       state.lastCaptureError = err;
-      // 窗口未聚焦类错误：重试无用（captureVisibleTab 要求活动窗口在前台），立即抛明确提示
-      if (err && /focused window|focus/i.test(err)) {
-        throw new Error('截图失败：浏览器窗口未处于前台（请点击浏览器窗口使其聚焦后再试）');
+      // 切换标签或窗口失焦后，captureVisibleTab 的结果不再可信；立即结束本次会话，
+      // 不能继续滚动后续瓦片，更不能把结果写入可能已重新打开的覆盖层。
+      if (err && /(focused window|focus|not active|inactive|不再激活|未激活)/i.test(err)) {
+        if (isSessionCurrent(session)) showError(session, '截图已取消：原截图标签或窗口已不再激活');
+        cancelCaptureSession('capture-target-inactive');
+        return null;
       }
-      await new Promise((r) => setTimeout(r, d));
+      if (!(await waitForSession(session, d))) return null;
     }
     return null;
   }
@@ -672,7 +791,8 @@
   }
 
   // ---------- 结果面板 ----------
-  function showResult(canvas) {
+  function showResult(session, canvas) {
+    if (!isSessionCurrent(session) || !els) return;
     state.resultMode = true;
     els.sel.style.display = 'none';
     els.sizeTip.style.display = 'none';
@@ -714,7 +834,13 @@
           tc.getContext('2d').drawImage(canvas, 0, 0, 460, th);
         }
         const blob = await new Promise((res) => tc.toBlob(res, 'image/png'));
+        // 缩略图编码不能把旧会话的异步结果写入重新打开的覆盖层。
+        if (host !== session.hostAtStart || !els || !els.result.contains(imgEl)) return;
         const url = URL.createObjectURL(blob);
+        if (host !== session.hostAtStart || !els || !els.result.contains(imgEl)) {
+          URL.revokeObjectURL(url);
+          return;
+        }
         if (state.thumbUrl) URL.revokeObjectURL(state.thumbUrl);
         state.thumbUrl = url;
         imgEl.src = url;
@@ -734,7 +860,8 @@
     // 不自动保存/复制：由用户在结果面板手动选择，避免截图后立即弹出保存对话框
   }
 
-  function showError(msg) {
+  function showError(session, msg) {
+    if (!isSessionCurrent(session) || !els) return;
     state.resultMode = true;
     els.sel.style.display = 'none';
     els.layer.style.cursor = 'default';
@@ -798,6 +925,9 @@
     port.onMessage.addListener((message) => onStatus(message, requestId));
     port.onDisconnect.addListener(() => {
       const error = chrome.runtime.lastError;
+      // 理论上下载只会在捕获完成后开始；仍将异常断开视为会话取消，防止未来
+      // 流程调整后遗留正在运行的截图。
+      if (state.captureSession) cancelCaptureSession('download-port-disconnect');
       if (state.download && state.download.requestId === requestId && !state.download.downloadCreated) {
         onStatus({ type: 'DOWNLOAD_ERROR', requestId, error: error ? error.message : '下载连接已断开' }, requestId);
       }
@@ -869,15 +999,23 @@
 
   // ---------- 生命周期 ----------
   function bindEvents() {
+    if (eventsBound) return;
+    eventsBound = true;
     els.layer.addEventListener('pointerdown', onPointerDown);
     els.layer.addEventListener('pointermove', onPointerMove);
     els.layer.addEventListener('pointerup', onPointerUp);
     els.layer.addEventListener('pointercancel', (e) => {
-      if (state.dragging) finishDrag(e.pointerId);
+      if (state.dragging) teardown();
     });
     els.layer.addEventListener('wheel', (e) => e.preventDefault(), { passive: false });
     els.layer.addEventListener('contextmenu', (e) => e.preventDefault());
     document.addEventListener('keydown', onKeyDown, true);
+  }
+
+  function unbindEvents() {
+    if (!eventsBound) return;
+    document.removeEventListener('keydown', onKeyDown, true);
+    eventsBound = false;
   }
 
   function onKeyDown(e) {
@@ -893,6 +1031,8 @@
 
   function teardown() {
     logEvent({ ev: 'teardown' });
+    cancelCaptureSession('teardown');
+    unbindEvents();
     if (state.download) {
       const transfer = state.download;
       if (!transfer.downloadCreated) {
@@ -911,7 +1051,8 @@
       dragging: false, resultMode: false, scroller: null, vb: null,
       startContent: null, curContent: null, lastMouse: null,
       autoScrollDir: { x: 0, y: 0 }, rafId: 0, lastTs: 0,
-      lastCanvas: null, thumbUrl: null, download: null,
+      lastCanvas: null, thumbUrl: null, download: null, capturing: false,
+      captureSession: null, dragOriginalScroll: null,
     });
   }
 

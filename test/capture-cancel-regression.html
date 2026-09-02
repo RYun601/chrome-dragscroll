@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>截图取消与迟到结果回归测试</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; font: 14px system-ui, sans-serif; }
+  #scroller { width: 640px; height: 360px; overflow: auto; border: 1px solid #94a3b8; }
+  #content { width: 620px; height: 2400px; background: repeating-linear-gradient(#fff 0 39px, #e2e8f0 40px); }
+  #result { margin: 16px; white-space: pre; font-family: ui-monospace, Consolas, monospace; }
+  .pass { color: #15803d; } .fail { color: #b91c1c; }
+</style>
+</head>
+<body>
+  <div id="scroller"><div id="content"></div></div>
+  <pre id="result">测试准备中…</pre>
+  <script>
+    // 此钩子模拟一个已经发出、但永远不会自行结束的截图请求。
+    // 若移除 session 取消边界，释放该请求后将产生迟到的 capture-done。
+    let releaseCapture;
+    window.__CAPTURE_TEST__ = true;
+    window.__CAPTURE_TEST_HOOKS__ = {
+      requestCapture: () => new Promise((resolve) => { releaseCapture = resolve; }),
+    };
+  </script>
+  <script src="../content/content.js"></script>
+  <script>
+    (async () => {
+      const result = document.getElementById('result');
+      const fail = (error) => {
+        result.className = 'fail';
+        result.textContent = 'FAIL\n' + (error && error.message ? error.message : String(error));
+      };
+      try {
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        const scroller = document.getElementById('scroller');
+        const origin = scroller.scrollTop;
+        const layer = document.querySelector('#__scrollshot-host__').shadowRoot.querySelector('.ss-layer');
+        const box = scroller.getBoundingClientRect();
+        const x = box.left + 80;
+        const y = box.top + 80;
+        const bottom = box.bottom - 2;
+        const pointerId = 21;
+        layer.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, button: 0, pointerId, clientX: x, clientY: y }));
+        layer.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, buttons: 1, pointerId, clientX: x + 100, clientY: bottom }));
+        await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        layer.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, button: 0, pointerId, clientX: x + 100, clientY: bottom }));
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        window.__scrollshotStop();
+        if (typeof releaseCapture === 'function') releaseCapture(null);
+        await new Promise((resolve) => setTimeout(resolve, 500));
+        if (Math.abs(scroller.scrollTop - origin) > 1) throw new Error('取消后仍继续滚动');
+        if (window.__scrollshotEvents.some((item) => item.ev === 'capture-done')) throw new Error('出现迟到结果');
+        result.className = 'pass';
+        result.textContent = 'PASS\n取消后已恢复滚动位置，且没有迟到结果';
+      } catch (error) {
+        fail(error);
+      }
+    })();
+  </script>
+</body>
+</html>
