@@ -47,13 +47,14 @@
         await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
         layer.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, button: 0, pointerId, clientX: x + 100, clientY: bottom }));
         await new Promise((resolve) => setTimeout(resolve, 20));
-        window.__scrollshotStop();
+        // pagehide 覆盖导航、刷新和 frame unload：它不能让等待中的截图继续写入页面。
+        window.dispatchEvent(new PageTransitionEvent('pagehide', { persisted: false }));
         if (typeof releaseCapture === 'function') releaseCapture(null);
         await new Promise((resolve) => setTimeout(resolve, 500));
-        if (Math.abs(scroller.scrollTop - origin) > 1) throw new Error('取消后仍继续滚动');
-        if (window.__scrollshotEvents.some((item) => item.ev === 'capture-done')) throw new Error('出现迟到结果');
+        if (Math.abs(scroller.scrollTop - origin) > 1) throw new Error('pagehide 后仍继续滚动');
+        if (window.__scrollshotEvents.some((item) => item.ev === 'capture-done')) throw new Error('pagehide 后出现迟到结果');
         result.className = 'pass';
-        result.textContent = 'PASS\n取消后已恢复滚动位置，且没有迟到结果';
+        result.textContent = 'PASS\npagehide 后已恢复滚动位置，且没有迟到结果';
       } catch (error) {
         fail(error);
       }

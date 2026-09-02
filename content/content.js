@@ -84,6 +84,8 @@
       hostAtStart,
       abortController: new AbortController(),
       instantScroll: false,
+      settleRafIds: new Set(),
+      settleTimerIds: new Set(),
     };
   }
 
@@ -91,9 +93,18 @@
     return !!session && !session.cancelled && state.captureSession === session && host === session.hostAtStart;
   }
 
+  function clearSettleWork(session) {
+    if (!session) return;
+    for (const id of session.settleRafIds || []) cancelAnimationFrame(id);
+    for (const id of session.settleTimerIds || []) clearTimeout(id);
+    if (session.settleRafIds) session.settleRafIds.clear();
+    if (session.settleTimerIds) session.settleTimerIds.clear();
+  }
+
   function cleanupCaptureSession(session) {
     if (!session || session.cleaned) return;
     session.cleaned = true;
+    clearSettleWork(session);
     if (session.instantScroll) {
       setInstantScroll(session.scroller, false);
       session.instantScroll = false;
@@ -685,7 +696,7 @@
       const finish = () => {
         if (!done) {
           done = true;
-          clearTimeout(timer);
+          clearSettleWork(session);
           session.abortController.signal.removeEventListener('abort', onAbort);
           resolve(isSessionCurrent(session));
         }
@@ -693,10 +704,22 @@
       const onAbort = () => finish();
       // rAF 在标签页后台/不可见时会被节流甚至暂停，加超时兜底避免截图卡死
       const timer = setTimeout(finish, Math.max(50, settings.settleDelay * 6));
-      requestAnimationFrame(() => {
+      session.settleTimerIds.add(timer);
+      const raf1 = requestAnimationFrame(() => {
+        session.settleRafIds.delete(raf1);
         if (!isSessionCurrent(session)) { finish(); return; }
-        requestAnimationFrame(() => setTimeout(finish, settings.settleDelay));
+        const raf2 = requestAnimationFrame(() => {
+          session.settleRafIds.delete(raf2);
+          if (!isSessionCurrent(session)) { finish(); return; }
+          const timer2 = setTimeout(() => {
+            session.settleTimerIds.delete(timer2);
+            finish();
+          }, settings.settleDelay);
+          session.settleTimerIds.add(timer2);
+        });
+        session.settleRafIds.add(raf2);
       });
+      session.settleRafIds.add(raf1);
       session.abortController.signal.addEventListener('abort', onAbort, { once: true });
     });
   }
@@ -1010,16 +1033,24 @@
     els.layer.addEventListener('wheel', (e) => e.preventDefault(), { passive: false });
     els.layer.addEventListener('contextmenu', (e) => e.preventDefault());
     document.addEventListener('keydown', onKeyDown, true);
+    window.addEventListener('pagehide', onPageHide);
   }
 
   function unbindEvents() {
     if (!eventsBound) return;
     document.removeEventListener('keydown', onKeyDown, true);
+    window.removeEventListener('pagehide', onPageHide);
     eventsBound = false;
   }
 
   function onKeyDown(e) {
     if (e.key === 'Escape' && host) teardown();
+  }
+
+  function onPageHide() {
+    // 导航、刷新、frame 卸载以及 bfcache 冻结前都必须终止当前会话。
+    // teardown 会先发送 CAPTURE_CANCEL（非测试模式）并恢复滚动、隐藏元素和定时资源。
+    if (host || state.captureSession) teardown();
   }
 
   async function start() {
