@@ -31,12 +31,14 @@ chrome.runtime.onMessage.addListener((message, sender) => {
       bytes: 0,
       chunks: [],
       blobUrl: null,
+      phase: 'receiving',
     });
     return;
   }
 
   if (message.type === 'DOWNLOAD_CHUNK') {
     const session = sessions.get(message.requestId);
+    if (session && session.phase !== 'receiving') return;
     if (!session || message.index !== session.nextIndex) {
       send({ type: 'DOWNLOAD_ERROR', requestId: message.requestId, error: '下载分块顺序无效' });
       return;
@@ -56,12 +58,15 @@ chrome.runtime.onMessage.addListener((message, sender) => {
 
   if (message.type === 'DOWNLOAD_END') {
     const session = sessions.get(message.requestId);
+    // 终态一旦被接受即不可重复处理，避免重复创建 Blob URL。
+    if (session && session.phase !== 'receiving') return;
     if (!session || session.bytes !== session.expectedBytes || session.nextIndex !== message.count
       || message.byteLength !== session.expectedBytes) {
       send({ type: 'DOWNLOAD_ERROR', requestId: message.requestId, error: '下载数据长度校验失败' });
       release(message.requestId);
       return;
     }
+    session.phase = 'ending';
     const blob = new Blob(session.chunks, { type: session.mime });
     session.blobUrl = URL.createObjectURL(blob);
     send({

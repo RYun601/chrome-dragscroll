@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
+import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -40,4 +41,90 @@ test('content script exposes JSON-safe download and capture cancellation message
   assert.match(content, /CAPTURE_CANCEL/);
   assert.match(content, /64_000_000/);
   assert.match(content, /128 MiB|128 \* 1024 \* 1024/);
+});
+
+function loadBackgroundForDownloadTest() {
+  const sentMessages = [];
+  const downloadCalls = [];
+  const noopEvent = { addListener() {} };
+  const chrome = {
+    runtime: {
+      getURL: (file) => 'chrome-extension://test/' + file,
+      sendMessage: (message) => sentMessages.push(message),
+      onConnect: noopEvent,
+      onMessage: noopEvent,
+    },
+    offscreen: { createDocument: async () => {} },
+    downloads: {
+      download: (options, callback) => {
+        downloadCalls.push(options);
+        callback(downloadCalls.length);
+      },
+      search: (_query, callback) => callback([{ state: 'in_progress' }]),
+      onChanged: noopEvent,
+    },
+    storage: {
+      session: {
+        set: (_items, callback) => callback(),
+        get: (_key, callback) => callback({}),
+        remove: (_key, callback) => callback(),
+      },
+    },
+    tabs: {
+      sendMessage: () => {},
+      onRemoved: noopEvent,
+      onUpdated: noopEvent,
+      query: () => {},
+      captureVisibleTab: () => {},
+    },
+    action: { onClicked: noopEvent },
+    commands: { onCommand: noopEvent },
+    scripting: { executeScript: async () => {} },
+  };
+  const context = { chrome, console, Promise, setTimeout };
+  vm.runInNewContext(
+    read('background.js') + '\n;globalThis.__downloadTestApi = { endDownload, startChromeDownload, downloadSessions };',
+    context,
+    { filename: 'background.js' },
+  );
+  return { api: context.__downloadTestApi, sentMessages, downloadCalls };
+}
+
+test('one completed request forwards one end and creates one Chrome download', () => {
+  const { api, sentMessages, downloadCalls } = loadBackgroundForDownloadTest();
+  const port = { postMessage() {} };
+  const session = {
+    requestId: 'request-1',
+    port,
+    expectedBytes: 4,
+    bytes: 4,
+    nextIndex: 1,
+    filename: 'capture.png',
+    tabId: 1,
+    frameId: 0,
+    downloadId: null,
+    createdAt: 0,
+    phase: 'receiving',
+    downloadStarting: false,
+    offscreenReady: true,
+    pendingMessages: [],
+  };
+  api.downloadSessions.set(session.requestId, session);
+
+  const end = { requestId: session.requestId, count: 1, byteLength: 4 };
+  api.endDownload(end, port);
+  api.endDownload(end, port);
+  assert.equal(sentMessages.filter((message) => message.type === 'DOWNLOAD_END').length, 1);
+
+  api.startChromeDownload(session, 'blob:first');
+  api.startChromeDownload(session, 'blob:duplicate');
+  assert.equal(downloadCalls.length, 1);
+});
+
+test('README documents the offscreen-only Blob URL permission', () => {
+  const readme = read('README.md');
+  assert.match(readme, /offscreen/);
+  assert.match(readme, /本地隐藏文档/);
+  assert.match(readme, /Blob URL/);
+  assert.match(readme, /无 `?<all_urls>`?、无网络请求、无数据收集/);
 });

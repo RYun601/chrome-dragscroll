@@ -23,7 +23,7 @@ GoFullPage / Awesome Screenshot / FireShot / Full Page Screenshot 等**只会滚
 | 🎚️ **滚动距离手动可控** | 想截多长截多长，不依赖"自动滚到底"，无限滚动页面友好 |
 | 🧹 **截图干净无污染** | 捕获时自动隐藏覆盖层：不偏色、不错位、页头不重复；失败自动重试并明确提示 |
 | 💾 **大图内存友好** | Blob 直存，避免超大 base64 撑爆内存 |
-| 🔒 **最小权限、隐私干净** | 仅 `activeTab`/`scripting`/`storage`/`downloads`/`clipboardWrite`，无 `<all_urls>`、无网络请求、无数据收集 |
+| 🔒 **最小权限、隐私干净** | 仅 `activeTab`/`scripting`/`storage`/`downloads`/`clipboardWrite`/`offscreen`；`offscreen` 仅用于本地隐藏文档创建和释放 Blob URL，以可靠保存 PNG；无 `<all_urls>`、无网络请求、无数据收集 |
 
 ## 安装（开发者模式）
 
@@ -86,7 +86,7 @@ GoFullPage / Awesome Screenshot / FireShot / Full Page Screenshot 等**只会滚
 
 ## 权限说明（最小化）
 
-`activeTab` + `scripting`（点击图标后临时注入）、`storage`（设置）、`downloads`（保存）、`clipboardWrite`（复制）。**无 `<all_urls>`、无网络请求、无数据收集。**
+`activeTab` + `scripting`（点击图标后临时注入）、`storage`（设置）、`downloads`（保存）、`clipboardWrite`（复制）、`offscreen`（仅在本地隐藏文档中创建和释放 Blob URL，以可靠保存 PNG）。**无 `<all_urls>`、无网络请求、无数据收集。**
 
 ## 已知限制
 

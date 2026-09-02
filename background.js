@@ -95,6 +95,7 @@ async function ensureOffscreenDocument() {
 }
 
 function deleteSession(session) {
+  session.phase = 'completed';
   downloadSessions.delete(session.requestId);
   if (session.downloadId != null) downloadIds.delete(session.downloadId);
 }
@@ -185,6 +186,10 @@ function searchForTerminalDownload(session) {
 }
 
 function startChromeDownload(session, blobUrl) {
+  if (!session || session.phase !== 'ending' || session.downloadStarting || session.downloadId != null) return;
+  // URL_READY 可能因为上下文重试而重复抵达；在调用 downloads API 前同步锁定会话。
+  session.downloadStarting = true;
+  session.phase = 'downloading';
   session.blobUrl = blobUrl;
   chrome.downloads.download({ url: blobUrl, filename: session.filename }, (downloadId) => {
     const error = lastErrorMessage('');
@@ -246,6 +251,8 @@ function beginDownload(message, port) {
     blobUrl: null,
     downloadId: null,
     createdAt: Date.now(),
+    phase: 'receiving',
+    downloadStarting: false,
     offscreenReady: false,
     pendingMessages: [{
       target: 'offscreen',
@@ -264,6 +271,7 @@ function beginDownload(message, port) {
 
 function acceptChunk(message, port) {
   const session = downloadSessions.get(message.requestId);
+  if (session && session.phase !== 'receiving') return;
   if (!session || session.port !== port || !Number.isSafeInteger(message.index)
     || message.index !== session.nextIndex) {
     postToPort({ port }, { type: 'DOWNLOAD_ERROR', requestId: message && message.requestId, error: '下载分块顺序无效' });
@@ -283,6 +291,7 @@ function acceptChunk(message, port) {
 
 function endDownload(message, port) {
   const session = downloadSessions.get(message.requestId);
+  if (session && session.phase !== 'receiving') return;
   if (!session || session.port !== port || !Number.isSafeInteger(message.count)
     || message.count !== session.nextIndex || message.byteLength !== session.expectedBytes
     || session.bytes !== session.expectedBytes) {
@@ -290,6 +299,8 @@ function endDownload(message, port) {
     else postToPort({ port }, { type: 'DOWNLOAD_ERROR', requestId: message && message.requestId, error: '下载会话不存在' });
     return;
   }
+  // 必须在转发前写入不可逆终态，重复 END 不得创建第二个 Blob/下载。
+  session.phase = 'ending';
   queueForOffscreen(session, {
     type: 'DOWNLOAD_END', requestId: session.requestId, count: message.count, byteLength: message.byteLength,
   });
