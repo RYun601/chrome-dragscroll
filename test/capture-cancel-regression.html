@@ -17,7 +17,7 @@
   <pre id="result">测试准备中…</pre>
   <script>
     // 此钩子模拟一个已经发出、但永远不会自行结束的截图请求。
-    // 若移除 session 取消边界，释放该请求后将产生迟到的 capture-done。
+    // 每个取消入口在释放钩子前都必须使会话失效。
     let releaseCapture;
     window.__CAPTURE_TEST__ = true;
     window.__CAPTURE_TEST_HOOKS__ = {
@@ -33,28 +33,52 @@
         result.textContent = 'FAIL\n' + (error && error.message ? error.message : String(error));
       };
       try {
-        await new Promise((resolve) => setTimeout(resolve, 30));
         const scroller = document.getElementById('scroller');
-        const origin = scroller.scrollTop;
-        const layer = document.querySelector('#__scrollshot-host__').shadowRoot.querySelector('.ss-layer');
-        const box = scroller.getBoundingClientRect();
-        const x = box.left + 80;
-        const y = box.top + 80;
-        const bottom = box.bottom - 2;
-        const pointerId = 21;
-        layer.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, button: 0, pointerId, clientX: x, clientY: y }));
-        layer.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, buttons: 1, pointerId, clientX: x + 100, clientY: bottom }));
-        await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-        layer.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, button: 0, pointerId, clientX: x + 100, clientY: bottom }));
-        await new Promise((resolve) => setTimeout(resolve, 20));
-        // pagehide 覆盖导航、刷新和 frame unload：它不能让等待中的截图继续写入页面。
-        window.dispatchEvent(new PageTransitionEvent('pagehide', { persisted: false }));
-        if (typeof releaseCapture === 'function') releaseCapture(null);
-        await new Promise((resolve) => setTimeout(resolve, 500));
-        if (Math.abs(scroller.scrollTop - origin) > 1) throw new Error('pagehide 后仍继续滚动');
-        if (window.__scrollshotEvents.some((item) => item.ev === 'capture-done')) throw new Error('pagehide 后出现迟到结果');
+        const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+        // 等待测试模式的 DOMContentLoaded 启动路径完成，避免在首个动画帧前取覆盖层。
+        await delay(30);
+        const waitOverlay = async () => {
+          for (let i = 0; i < 20; i += 1) {
+            const overlay = document.querySelector('#__scrollshot-host__');
+            if (overlay) return overlay.shadowRoot.querySelector('.ss-layer');
+            await delay(10);
+          }
+          throw new Error('覆盖层未启动');
+        };
+        const runCancellationCase = async (name, cancel, pointerId) => {
+          const layer = await waitOverlay();
+          const origin = scroller.scrollTop;
+          const eventStart = window.__scrollshotEvents.length;
+          releaseCapture = undefined;
+          const box = scroller.getBoundingClientRect();
+          const x = box.left + 80;
+          const y = box.top + 80;
+          const bottom = box.bottom - 2;
+          layer.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, button: 0, pointerId, clientX: x, clientY: y }));
+          layer.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, buttons: 1, pointerId, clientX: x + 100, clientY: bottom }));
+          // 这里显式模拟拖拽期间已滚动的容器，避免无头 Chrome 的第二轮 rAF 节流
+          // 掩盖取消路径；会话仍必须恢复 pointerdown 时记录的 origin。
+          scroller.scrollTop = origin + 80;
+          layer.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, button: 0, pointerId, clientX: x + 100, clientY: bottom }));
+          await delay(20);
+          if (typeof releaseCapture !== 'function') throw new Error(name + ' 前未进入 held capture');
+          cancel();
+          releaseCapture(null);
+          await delay(500);
+          if (Math.abs(scroller.scrollTop - origin) > 1) throw new Error(name + ' 后仍继续滚动');
+          const newEvents = window.__scrollshotEvents.slice(eventStart);
+          if (newEvents.some((item) => item.ev === 'capture-done')) throw new Error(name + ' 后出现迟到结果');
+        };
+
+        // 显式关闭覆盖层的入口必须继续受保护。
+        await runCancellationCase('显式停止', () => window.__scrollshotStop(), 21);
+        // 与显式停止分开重新建立覆盖层，再覆盖页面导航/刷新/frame unload 的入口。
+        await window.__scrollshotStart();
+        await runCancellationCase('pagehide', () => {
+          window.dispatchEvent(new PageTransitionEvent('pagehide', { persisted: false }));
+        }, 22);
         result.className = 'pass';
-        result.textContent = 'PASS\npagehide 后已恢复滚动位置，且没有迟到结果';
+        result.textContent = 'PASS\n显式停止和 pagehide 后均恢复滚动位置，且没有迟到结果';
       } catch (error) {
         fail(error);
       }
