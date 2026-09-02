@@ -2,8 +2,9 @@
   "manifest_version": 3,
   "name": "滚动截图 · 拖拽即滚",
   "version": "0.1.0",
+  "minimum_chrome_version": "109",
   "description": "拖拽框选截图：拖到视口/滚动容器边缘自动滚动，支持任意滚动容器（含嵌套容器）与横向滚动，专治固定布局后台页无法滚动截图的问题。",
-  "permissions": ["activeTab", "scripting", "storage", "downloads", "clipboardWrite"],
+  "permissions": ["activeTab", "scripting", "storage", "downloads", "clipboardWrite", "offscreen"],
   "background": {
     "service_worker": "background.js"
   },

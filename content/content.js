@@ -17,6 +17,10 @@
   window.__SCROLLSHOT_INJECTED__ = true;
 
   const IS_TEST = typeof chrome === 'undefined' || !chrome.runtime || !chrome.runtime.id;
+  const DOWNLOAD_CHUNK_BYTES = 192 * 1024;
+  const MAX_OUTPUT_PIXELS = 64_000_000;
+  const MAX_OUTPUT_BYTES = 128 * 1024 * 1024;
+  const CAPTURE_CANCEL = 'CAPTURE_CANCEL';
 
   const DEFAULTS = {
     edgeMargin: 44,      // 边缘触发距离（px）
@@ -54,6 +58,7 @@
     lastTs: 0,
     lastCanvas: null,   // 最近一次结果 canvas（保存/复制时按需取图）
     thumbUrl: null,     // 结果缩略图 objectURL（teardown 时回收）
+    download: null,     // 当前 PNG 下载传输会话
   };
 
   // ---------- 工具 ----------
@@ -63,7 +68,10 @@
     if (IS_TEST) return Promise.resolve({});
     return new Promise((resolve) => {
       try {
-        chrome.runtime.sendMessage(msg, (resp) => resolve(resp || {}));
+        chrome.runtime.sendMessage(msg, (resp) => {
+          const error = chrome.runtime.lastError;
+          resolve(error ? { error: error.message } : (resp || {}));
+        });
       } catch (e) {
         resolve({});
       }
@@ -738,24 +746,107 @@
     els.result.querySelector('[data-act="close"]').addEventListener('click', () => teardown());
   }
 
+  function createRequestId() {
+    if (crypto && typeof crypto.randomUUID === 'function') return crypto.randomUUID();
+    return 'download-' + Date.now() + '-' + Math.random().toString(36).slice(2);
+  }
+
+  function encodeChunk(bytes) {
+    let binary = '';
+    for (let i = 0; i < bytes.length; i += 0x8000) {
+      binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+    }
+    return btoa(binary);
+  }
+
+  function updateDownloadStatus(message, requestId, msgEl) {
+    if (!message || message.requestId !== requestId || !state.download
+      || state.download.requestId !== requestId) return;
+    if (message.type === 'DOWNLOAD_STARTED') {
+      state.download.downloadCreated = true;
+      if (msgEl && !state.download.silent) {
+        msgEl.textContent = '浏览器正在保存…';
+        msgEl.className = 'rr-msg';
+      }
+      return;
+    }
+    if (message.type === 'DOWNLOAD_COMPLETE') {
+      if (msgEl && !state.download.silent) {
+        msgEl.textContent = '已保存 ✓';
+        msgEl.className = 'rr-msg';
+      }
+      const port = state.download.port;
+      state.download = null;
+      try { port.disconnect(); } catch (err) { /* 忽略 */ }
+      return;
+    }
+    if (message.type === 'DOWNLOAD_ERROR') {
+      if (msgEl && !state.download.silent) {
+        msgEl.textContent = '保存失败：' + (message.error || '未知错误');
+        msgEl.className = 'rr-msg err';
+      }
+      const port = state.download.port;
+      state.download = null;
+      try { port.disconnect(); } catch (err) { /* 忽略 */ }
+    }
+  }
+
+  async function sendBlobInChunks(blob, filename, onStatus, silent) {
+    const requestId = createRequestId();
+    const port = chrome.runtime.connect({ name: 'scrollshot-download' });
+    const transfer = { requestId, port, downloadCreated: false, silent: !!silent };
+    port.onMessage.addListener((message) => onStatus(message, requestId));
+    port.onDisconnect.addListener(() => {
+      const error = chrome.runtime.lastError;
+      if (state.download && state.download.requestId === requestId && !state.download.downloadCreated) {
+        onStatus({ type: 'DOWNLOAD_ERROR', requestId, error: error ? error.message : '下载连接已断开' }, requestId);
+      }
+    });
+
+    state.download = transfer;
+    port.postMessage({ type: 'DOWNLOAD_BEGIN', requestId, filename, mime: 'image/png', byteLength: blob.size });
+    let index = 0;
+    for (let offset = 0; offset < blob.size; offset += DOWNLOAD_CHUNK_BYTES) {
+      if (!state.download || state.download.requestId !== requestId) return transfer;
+      const bytes = new Uint8Array(await blob.slice(offset, offset + DOWNLOAD_CHUNK_BYTES).arrayBuffer());
+      if (!state.download || state.download.requestId !== requestId) return transfer;
+      port.postMessage({ type: 'DOWNLOAD_CHUNK', requestId, index, base64: encodeChunk(bytes) });
+      index += 1;
+    }
+    if (state.download && state.download.requestId === requestId) {
+      port.postMessage({ type: 'DOWNLOAD_END', requestId, count: index, byteLength: blob.size });
+    }
+    return transfer;
+  }
+
   async function savePng(canvas, w, h, msgEl, silent) {
     const filename = settings.filenamePrefix + '-' + w + 'x' + h + '.png';
     if (msgEl && !silent) {
-      msgEl.textContent = '正在保存…';
+      msgEl.textContent = '正在准备保存…';
       msgEl.className = 'rr-msg';
     }
-    // Blob 直存：发送二进制给 background（background 用 objectURL 下载），避免超大 dataURL
     const blob = await new Promise((res) => canvas.toBlob(res, 'image/png'));
-    const resp = await sendMessage({ type: 'DOWNLOAD', blob, filename });
-    if (msgEl && !silent) {
-      const ok = resp && resp.state === 'complete';
-      // 只有文件真正写入完成（background 收到 downloads.onChanged complete）才提示「已保存」；
-      // 实际保存位置取决于浏览器「另存为」对话框/下载设置，不写死具体目录。
-      if (IS_TEST) msgEl.textContent = '测试模式：未真正保存';
-      else if (ok) msgEl.textContent = '已保存 ✓';
-      else if (resp && resp.error) msgEl.textContent = '保存失败：' + resp.error;
-      else msgEl.textContent = '保存失败';
-      msgEl.className = 'rr-msg' + (ok || IS_TEST ? '' : ' err');
+    if (!blob) throw new Error('PNG 编码失败');
+    if (blob.size > MAX_OUTPUT_BYTES) {
+      if (msgEl && !silent) {
+        msgEl.textContent = '图片文件过大，请缩小选区后重试';
+        msgEl.className = 'rr-msg err';
+      }
+      return;
+    }
+    if (IS_TEST) {
+      if (msgEl && !silent) msgEl.textContent = '测试模式：未真正保存';
+      return;
+    }
+    try {
+      await sendBlobInChunks(blob, filename, (message, requestId) => {
+        updateDownloadStatus(message, requestId, msgEl);
+      }, silent);
+    } catch (err) {
+      if (msgEl && !silent) {
+        msgEl.textContent = '保存失败：' + (err.message || err);
+        msgEl.className = 'rr-msg err';
+      }
     }
   }
 
@@ -802,6 +893,14 @@
 
   function teardown() {
     logEvent({ ev: 'teardown' });
+    if (state.download) {
+      const transfer = state.download;
+      if (!transfer.downloadCreated) {
+        try { transfer.port.postMessage({ type: 'DOWNLOAD_CANCEL', requestId: transfer.requestId }); } catch (err) { /* 忽略 */ }
+      }
+      try { transfer.port.disconnect(); } catch (err) { /* 忽略 */ }
+      state.download = null;
+    }
     if (state.rafId) cancelAnimationFrame(state.rafId);
     if (state.thumbUrl) { URL.revokeObjectURL(state.thumbUrl); state.thumbUrl = null; }
     if (host && host.parentNode) host.parentNode.removeChild(host);
@@ -812,7 +911,7 @@
       dragging: false, resultMode: false, scroller: null, vb: null,
       startContent: null, curContent: null, lastMouse: null,
       autoScrollDir: { x: 0, y: 0 }, rafId: 0, lastTs: 0,
-      lastCanvas: null, thumbUrl: null,
+      lastCanvas: null, thumbUrl: null, download: null,
     });
   }
 
@@ -845,6 +944,10 @@
     else boot();
   } else {
     chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+      if (msg && (msg.type === 'DOWNLOAD_STARTED' || msg.type === 'DOWNLOAD_COMPLETE' || msg.type === 'DOWNLOAD_ERROR')) {
+        if (state.download) updateDownloadStatus(msg, state.download.requestId, els && els.result && els.result.querySelector('#rr-msg'));
+        return false;
+      }
       if (msg && msg.type === 'START') {
         start().then(() => sendResponse({ ok: true }));
         return true;
