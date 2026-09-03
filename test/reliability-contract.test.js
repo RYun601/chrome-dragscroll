@@ -205,3 +205,16 @@ test('blank numeric settings fall back to defaults in both contexts', () => {
     assert.equal(value.filenamePrefix, 'report');
   }
 });
+
+test('options status color has AA contrast on its white background', () => {
+  const html = read('options.html');
+  const match = html.match(/#status\s*\{[^}]*color:\s*(#[0-9a-f]{6})/i);
+  assert.ok(match, '状态区域必须声明六位十六进制文字颜色');
+  const channels = [1, 3, 5].map((index) => parseInt(match[1].slice(index, index + 2), 16) / 255);
+  const linear = channels.map((channel) => (
+    channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4
+  ));
+  const luminance = 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2];
+  const contrast = 1.05 / (luminance + 0.05);
+  assert.ok(contrast >= 4.5, '状态文字对比度必须至少为 4.5:1，实际为 ' + contrast.toFixed(2) + ':1');
+});
