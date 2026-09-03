@@ -188,7 +188,7 @@ DataTables 插件（`FixedColumns`）会在表格左侧生成**主表的克隆�
 
 - 虚拟滚动/懒加载列表：滚到哪才渲染到哪，跨屏拼接可能出现空白（可调大「滚动稳定等待」缓解，但无法根治）。
 - 页面内容在 Shadow DOM 内部（如某些 Web Component 应用）：`elementsFromPoint` 无法穿透，可能识别不到内部滚动容器。
-- 超大长图（单边 > 32000px 或选区 > 2.5 亿像素）：canvas 内存限制，会给出提示。
+- 超大长图（单边 > 32000px 或选区 > 64,000,000 像素）：canvas 内存限制，会给出提示。
 - 无限滚动（永远滚不到底）：由用户手动控制滚多少（这正是「拖拽式」相比「自动滚到底」的优势）。
 - iframe 内滚动、跨域：v1 不处理。
 
@@ -197,3 +197,34 @@ DataTables 插件（`FixedColumns`）会在表格左侧生成**主表的克隆�
 - 点图标即进入框选，拖到边缘自动滚，松手出图。
 - 结果面板：缩略图 + 尺寸 + 保存/复制/关闭。
 - Esc 随时取消。
+
+## 2026-09-03 Task 5 补录：文档、测试页与最终验收
+
+### 问题根因
+
+- README 中的权限、兼容性、输出预算和取消/保存状态描述已经落后于实现，仍保留旧的 2.5 亿像素说法。
+- `test/capture-engine.html` 只有基础读数，不足以在浏览器里判断最近事件和 `capture-start → capture-done` 的顺序。
+- `test/capture-cancel-regression.html` 的固定等待过短，会在 `settleDelay` 和 rAF 节流存在时误判为失败。
+
+### 设计约束
+
+- Offscreen API 只做本地 Blob URL 的创建/释放；Service Worker 不调用 `URL.createObjectURL()`。
+- 兼容 Chrome 109+，不依赖 Chrome 148 才有的 structured clone 消息序列化，仍保持 JSON 消息链路。
+- 下载链路使用 JSON-safe base64 分块：内容脚本把 PNG Blob 切块，经 `runtime.Port` 发给 Service Worker，再转交 offscreen 文档重组 Blob 并生成临时 object URL。
+- 截图队列是全局共享的 550ms 节流队列，调用 `tabs.get()` 先确认活动标签仍然有效，再执行 `captureVisibleTab`。
+- 取消链路必须覆盖显式取消、标签切换和活动窗口失焦；保存状态要区分准备、传输、浏览器正在保存、已保存和失败。
+- 输出预算与设置归一化要在内容脚本和设置页两端各自做一次，避免同步存储带来的越界值传播。
+
+### 验收记录
+
+- 已执行：`node --test test/reliability-contract.test.js`，已通过。
+- 已执行：`capture-budget-regression.html`，PASS，16000×16000 CSS @ DPR≈2 时被预算规则拒绝。
+- 已执行：`selection-width-regression.html`，PASS，纵向滚动后选区宽度保持 100px，输出约 113×343。
+- 已执行：`selection-height-regression.html`，PASS，横向滚动后选区高度保持 100px，输出约 343×113。
+- 已执行：`capture-cancel-regression.html`，PASS，显式停止与 `pagehide` 两条取消入口都恢复了原始滚动位置，且没有迟到结果。
+- 已执行：`capture-engine.html`，PASS，测试模式提示可见，事件顺序读数显示 `capture-start → capture-done`。
+- 已执行：`demo-page.html`，PASS，`#scroller` 识别正常并持续边缘滚动。
+- 已执行：`perfect-scrollbar.html`，PASS，`#app-content` 识别正常并持续边缘滚动。
+- 已执行：`window-scroll.html`，PASS，回退到了 `window` 滚动。
+- 已执行：`options.html`，语义标签与主区域结构正确，`HTTP/file` 环境下剪贴板 API 不可用属于预期；浏览器可访问性快照为 `100`。
+- 待验收：Chrome 真实扩展加载后的 `captureVisibleTab` 真实截屏、分块下载、真实 PNG 保存、标签切换取消、`Esc` 恢复原始滚动位置，以及下载状态在结果面板中的最终显示。

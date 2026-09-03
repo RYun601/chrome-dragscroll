@@ -35,6 +35,15 @@
       try {
         const scroller = document.getElementById('scroller');
         const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+        const waitFor = async (predicate, timeoutMs, stepMs) => {
+          const step = stepMs || 25;
+          const deadline = Date.now() + timeoutMs;
+          while (Date.now() < deadline) {
+            if (predicate()) return true;
+            await delay(step);
+          }
+          return predicate();
+        };
         // 等待测试模式的 DOMContentLoaded 启动路径完成，避免在首个动画帧前取覆盖层。
         await delay(30);
         const waitOverlay = async () => {
@@ -60,11 +69,15 @@
           // 掩盖取消路径；会话仍必须恢复 pointerdown 时记录的 origin。
           scroller.scrollTop = origin + 80;
           layer.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, button: 0, pointerId, clientX: x + 100, clientY: bottom }));
-          await delay(20);
-          if (typeof releaseCapture !== 'function') throw new Error(name + ' 前未进入 held capture');
+          if (!await waitFor(() => typeof releaseCapture === 'function', 2500)) {
+            throw new Error(name + ' 前未进入 held capture');
+          }
           cancel();
           releaseCapture(null);
-          await delay(500);
+          if (!await waitFor(() => Math.abs(scroller.scrollTop - origin) <= 1, 1500)) {
+            throw new Error(name + ' 后滚动位置未恢复');
+          }
+          await delay(200);
           if (Math.abs(scroller.scrollTop - origin) > 1) throw new Error(name + ' 后仍继续滚动');
           const newEvents = window.__scrollshotEvents.slice(eventStart);
           if (newEvents.some((item) => item.ev === 'capture-done')) throw new Error(name + ' 后出现迟到结果');

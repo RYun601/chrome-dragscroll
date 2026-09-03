@@ -133,12 +133,20 @@ test('one completed request forwards one end and creates one Chrome download', (
   assert.equal(downloadCalls.length, 1);
 });
 
-test('README documents the offscreen-only Blob URL permission', () => {
+test('README documents the implemented capture reliability facts', () => {
   const readme = read('README.md');
   assert.match(readme, /offscreen/);
   assert.match(readme, /本地隐藏文档/);
-  assert.match(readme, /Blob URL/);
-  assert.match(readme, /无 `?<all_urls>`?、无网络请求、无数据收集/);
+  assert.match(readme, /Chrome\s*109\+/);
+  assert.match(readme, /structured clone/);
+  assert.match(readme, /32000px/);
+  assert.match(readme, /6400\s*万像素|64[,，]?\s*000[,，]?\s*000/);
+  assert.match(readme, /128\s*MiB/);
+  assert.match(readme, /保存状态/);
+  assert.match(readme, /切换标签.*取消|标签.*取消/);
+  assert.match(readme, /Esc.*恢复|恢复.*滚动位置/);
+  assert.match(readme, /测试模式.*真实截屏|跳过真实截屏/);
+  assert.doesNotMatch(readme, /2\.5\s*亿像素|250\s*000\s*000/);
 });
 
 test('options page labels every form control and exposes a main landmark', () => {

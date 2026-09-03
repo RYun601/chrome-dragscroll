@@ -25,6 +25,14 @@ GoFullPage / Awesome Screenshot / FireShot / Full Page Screenshot 等**只会滚
 | 💾 **大图内存友好** | Blob 直存，避免超大 base64 撑爆内存 |
 | 🔒 **最小权限、隐私干净** | 仅 `activeTab`/`scripting`/`storage`/`downloads`/`clipboardWrite`/`offscreen`；`offscreen` 仅用于本地隐藏文档创建和释放 Blob URL，以可靠保存 PNG；无 `<all_urls>`、无网络请求、无数据收集 |
 
+## 兼容性与保存状态
+
+- 兼容 Chrome 109+，不依赖 Chrome 148 才有的 structured clone 消息序列化；扩展仍按现有 JSON 消息链路工作。
+- 输出预算是单边最多 32000px、总输出不超过 64,000,000 像素，PNG 文件不超过 128 MiB；超出时会提示缩小选区或降低浏览器缩放。
+- 结果面板里的保存状态依次是：准备 → 传输 → 浏览器正在保存 → 已保存 / 失败；保存仍然要由用户手动点击「保存 PNG」触发。
+- 捕获期间切换标签会取消当前任务；按 `Esc` 会取消并恢复原始滚动位置。
+- `test/*.html` 的测试模式会跳过真实 `captureVisibleTab`，只验证拖拽、滚动、拼接和状态读数；真实 PNG 保存需要在已加载扩展的 Chrome 里验收。
+
 ## 安装（开发者模式）
 
 1. 打开 Chrome，访问 `chrome://extensions/`；
@@ -68,7 +76,7 @@ GoFullPage / Awesome Screenshot / FireShot / Full Page Screenshot 等**只会滚
 
 ## 在浏览器里自测引擎（无需装扩展）
 
-`test/*.html` 通过 `window.__CAPTURE_TEST__` 直接引入 `content.js`（自动跳过截屏步骤），
+`test/*.html` 通过 `window.__CAPTURE_TEST__` 直接引入 `content.js`，自动跳过真实截屏步骤，
 打开即可用鼠标实测「拖拽 + 边缘自动滚动 + 选区增长」交互。页面右上角有实时读数。
 
 ## 设置项
@@ -78,7 +86,7 @@ GoFullPage / Awesome Screenshot / FireShot / Full Page Screenshot 等**只会滚
 - **滚动稳定等待**：每次滚动后等页面稳定再截图；懒加载/图片多的页面可调大（默认 130ms，含自动超时兜底防卡死）
 - **隐藏固定/悬浮元素**：截图时对 `fixed/sticky` 且与容器视框重叠的元素临时隐藏，避免长图中页头/悬浮按钮重复（默认开）
 
-> 截图完成后在结果面板**手动选择**「保存 PNG / 复制 / 关闭」，不会自动保存或弹窗。
+> 截图完成后在结果面板**手动选择**「保存 PNG / 复制 / 关闭」，不会自动保存或弹窗；保存状态会显示「准备 / 传输 / 浏览器正在保存 / 已保存 / 失败」。
 > 「复制」仅在**安全上下文**（HTTPS / localhost，支持剪贴板图片）时显示；HTTP 页面不支持则自动隐藏。
 >
 > 截图时会自动隐藏覆盖层蒙层与选区框（避免暗色/偏色/行间亮度分界混入成图），
@@ -93,7 +101,7 @@ GoFullPage / Awesome Screenshot / FireShot / Full Page Screenshot 等**只会滚
 - **虚拟滚动/懒加载**列表：滚到哪才渲染到哪，跨屏拼接可能空白（可调大「滚动稳定等待」缓解，无法根治）；
 - **「复制」按钮仅安全上下文可用**：`navigator.clipboard` + `ClipboardItem` 需要 HTTPS / localhost，普通 HTTP 页面不支持，此时按钮自动隐藏；
 - 内容在页面自己的 **Shadow DOM** 内部时（`elementsFromPoint` 不穿透），可能识别不到内部滚动容器；
-- 超大长图（单边 > 32000px 或选区 > 2.5 亿像素）受 canvas 内存限制，会提示缩小选区；
+- 超大长图（单边 > 32000px 或选区 > 64,000,000 像素）受 canvas 内存限制，会提示缩小选区；
 - 无限滚动列表：由用户手动控制滚动距离（这正是「拖拽式」优于「自动滚到底」之处）；
 - iframe / 跨域内容：v1 不处理。
 

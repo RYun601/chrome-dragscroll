@@ -30,7 +30,8 @@
   #readout {
     position: fixed; right: 12px; top: 12px; background: #fff; border: 1px solid #d1d5db;
     border-radius: 8px; padding: 8px 10px; font: 11px/1.7 ui-monospace, Consolas, monospace;
-    color: #333; z-index: 2; box-shadow: 0 2px 10px rgba(0,0,0,.12); max-width: 340px;
+    color: #333; z-index: 2; box-shadow: 0 2px 10px rgba(0,0,0,.12); max-width: 360px;
+    white-space: pre-line;
   }
 </style>
 </head>
@@ -81,12 +82,30 @@
     const sc = document.getElementById('scroller');
     setInterval(() => {
       let d = {};
+      let events = [];
       try { d = (window.__scrollshotDebug && window.__scrollshotDebug()) || {}; } catch (e) {}
+      try {
+        if (Array.isArray(window.__scrollshotEvents)) events = window.__scrollshotEvents.slice(-6);
+      } catch (e) {}
+      const recentEvents = events.length
+        ? events.map((item) => {
+            const when = item.t ? ' @ ' + new Date(item.t).toLocaleTimeString() : '';
+            return (item.ev || 'unknown') + when;
+          }).join('\n')
+        : '—';
+      const captureSeq = events
+        .filter((item) => item.ev === 'capture-start' || item.ev === 'capture-done')
+        .map((item) => item.ev)
+        .join(' → ') || '—';
+      const testHint = window.__CAPTURE_TEST__ ? '\n测试模式跳过真实截屏' : '';
       document.getElementById('readout').textContent =
         '容器: ' + (d.container || '—') +
         '\nscrollTop: ' + d.scrollTop + ' / maxY: ' + d.maxY +
         '\nscrollLeft: ' + d.scrollLeft + ' / maxX: ' + d.maxX +
         '\n选区: ' + (d.selW ? d.selW + ' × ' + d.selH : '—') +
+        '\n最近事件:\n' + recentEvents +
+        '\n捕获序列: ' + captureSeq +
+        testHint +
         (d.dragging ? '\n[拖拽中]' : '') +
         (d.resultMode ? '\n[已出图]' : '');
     }, 120);
