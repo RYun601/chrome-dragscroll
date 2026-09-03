@@ -160,3 +160,48 @@ test('options and content settings are normalized', () => {
 test('content script removes the document keydown listener', () => {
   assert.match(read(path.join('content', 'content.js')), /removeEventListener\(['"]keydown/);
 });
+
+function loadOptionsSettingsApi() {
+  const element = { addEventListener() {} };
+  const context = {
+    chrome: { storage: { sync: {} } },
+    document: {
+      addEventListener() {},
+      getElementById() { return element; },
+    },
+  };
+  vm.runInNewContext(
+    read('options.js') + '\n;globalThis.__settingsTestApi = { boundedNumber, normalizeSettings };',
+    context,
+    { filename: 'options.js' },
+  );
+  return context.__settingsTestApi;
+}
+
+function loadContentSettingsApi() {
+  const context = {
+    window: { __CAPTURE_TEST__: true },
+    document: { readyState: 'loading', addEventListener() {} },
+  };
+  const script = read(path.join('content', 'content.js')).replace(
+    /\}\)\(\);\s*$/,
+    'window.__settingsTestApi = { boundedNumber, normalizeSettings };\n})();',
+  );
+  vm.runInNewContext(script, context, { filename: 'content/content.js' });
+  return context.window.__settingsTestApi;
+}
+
+test('blank numeric settings fall back to defaults in both contexts', () => {
+  for (const api of [loadOptionsSettingsApi(), loadContentSettingsApi()]) {
+    const value = api.normalizeSettings({
+      edgeMargin: '   ',
+      scrollSpeed: '',
+      settleDelay: '\t',
+      filenamePrefix: 'report',
+    });
+    assert.equal(value.edgeMargin, 44);
+    assert.equal(value.scrollSpeed, 800);
+    assert.equal(value.settleDelay, 130);
+    assert.equal(value.filenamePrefix, 'report');
+  }
+});

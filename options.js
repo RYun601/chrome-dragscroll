@@ -12,6 +12,7 @@ const DEFAULTS = {
 const $ = (id) => document.getElementById(id);
 
 function boundedNumber(value, min, max, fallback) {
+  if (typeof value === 'string' && value.trim() === '') return fallback;
   const n = Number(value);
   return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : fallback;
 }
