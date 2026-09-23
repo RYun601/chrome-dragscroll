@@ -59,8 +59,10 @@ GoFullPage / Awesome Screenshot / FireShot / Full Page Screenshot 等**只会滚
 ```text
 （扩展根目录）
 ├─ manifest.json          # MV3 清单（最小权限）
-├─ background.js          # Service Worker：注入脚本、代理截屏/下载
+├─ background.js          # Service Worker：注入脚本、代理截屏/下载/复制弹窗
 ├─ content\content.js     # 核心引擎：覆盖层、容器检测、边缘自动滚、拼合截图
+├─ copy.html / copy.js    # 复制中介页：HTTP 页面代写剪贴板的聚焦扩展页
+├─ offscreen.html / .js   # 隐藏文档：重组 PNG 分块并持有 Blob URL（保存用）
 ├─ options.html / .js     # 设置页
 ├─ build-icons.ps1        # 图标生成脚本
 ├─ icons\                 # 128/48/16 PNG 图标
@@ -87,7 +89,8 @@ GoFullPage / Awesome Screenshot / FireShot / Full Page Screenshot 等**只会滚
 - **隐藏固定/悬浮元素**：截图时对 `fixed/sticky` 且与容器视框重叠的元素临时隐藏，避免长图中页头/悬浮按钮重复（默认开）
 
 > 截图完成后在结果面板**手动选择**「保存 PNG / 复制 / 关闭」，不会自动保存或弹窗；保存链路内部会经历「准备 / 传输 / 浏览器正在保存 / 已保存 / 失败」，但结果面板只显示「正在准备保存…」「浏览器正在保存…」「已保存 ✓ / 保存失败…」。
-> 「复制」仅在**安全上下文**（HTTPS / localhost，支持剪贴板图片）时显示；HTTP 页面不支持则自动隐藏。
+> 「复制」在 HTTPS / localhost 等**安全上下文**直接写剪贴板；普通 HTTP 页面没有 `navigator.clipboard`，
+> 此时会自动弹出一个瞬间关闭的小窗口（扩展页）代写，按钮照常可用。
 >
 > 截图时会自动隐藏覆盖层蒙层与选区框（避免暗色/偏色/行间亮度分界混入成图），
 > 单块捕获失败会自动重试，多次失败会明确提示而不是静默保存残缺图。
@@ -99,7 +102,7 @@ GoFullPage / Awesome Screenshot / FireShot / Full Page Screenshot 等**只会滚
 ## 已知限制
 
 - **虚拟滚动/懒加载**列表：滚到哪才渲染到哪，跨屏拼接可能空白（可调大「滚动稳定等待」缓解，无法根治）；
-- **「复制」按钮仅安全上下文可用**：`navigator.clipboard` + `ClipboardItem` 需要 HTTPS / localhost，普通 HTTP 页面不支持，此时按钮自动隐藏；
+- **HTTP 页面复制会闪出一个小窗口**：非安全上下文没有 `navigator.clipboard`，需由扩展页代写（窗口约 0.3 秒自动关闭）；安全上下文则直接复制、无窗口；
 - 内容在页面自己的 **Shadow DOM** 内部时（`elementsFromPoint` 不穿透），可能识别不到内部滚动容器；
 - 超大长图（单边 > 32000px 或选区 > 64,000,000 像素）受 canvas 内存限制，会提示缩小选区；
 - 无限滚动列表：由用户手动控制滚动距离（这正是「拖拽式」优于「自动滚到底」之处）；

@@ -508,5 +508,34 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     cancelCapture(sender.tab.id, msg.captureId);
     return false;
   }
+  if (msg.type === 'OPEN_COPY_WINDOW') {
+    // 普通 HTTP 页面没有 navigator.clipboard：弹出「聚焦的扩展页」代写剪贴板。
+    // 扩展页是安全上下文且持有 clipboardWrite 权限，窗口聚焦即可写入；
+    // 图片数据由该页直接向内容脚本分块索取，不经过 Service Worker。
+    const tabId = sender.tab ? sender.tab.id : null;
+    if (tabId == null) {
+      sendResponse({ error: '无法确定当前标签页' });
+      return true;
+    }
+    chrome.windows.create({
+      url: chrome.runtime.getURL('copy.html')
+        + '?req=' + encodeURIComponent(msg.requestId)
+        + '&tab=' + tabId,
+      type: 'popup',
+      width: 300,
+      height: 110,
+      focused: true,
+    }, () => {
+      const error = lastErrorMessage('');
+      sendResponse(error ? { error } : { ok: true });
+    });
+    return true;
+  }
+  if (msg.type === 'PING') {
+    // 结果面板打开期间的心跳：让 Service Worker 不被 Chrome 空闲回收，
+    // 避免用户稍后点保存/复制时后台正在冷启动。
+    sendResponse({ ok: true });
+    return true;
+  }
   return false;
 });

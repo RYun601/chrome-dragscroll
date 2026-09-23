@@ -22,6 +22,8 @@
   const MAX_OUTPUT_PIXELS = 64_000_000;
   const MAX_OUTPUT_BYTES = 128 * 1024 * 1024;
   const CAPTURE_CANCEL = 'CAPTURE_CANCEL';
+  const COPY_TIMEOUT_MS = 30000;      // 弹窗代写剪贴板的整体超时
+  const COPY_CHUNK_BATCH = 8;         // 弹窗每次索取的分块数（8 × 192KB）
 
   const DEFAULTS = {
     edgeMargin: 44,      // 边缘触发距离（px）
@@ -79,6 +81,8 @@
     lastCanvas: null,   // 最近一次结果 canvas（保存/复制时按需取图）
     thumbUrl: null,     // 结果缩略图 objectURL（teardown 时回收）
     download: null,     // 当前 PNG 下载传输会话
+    copy: null,         // 当前复制传输会话（HTTP 页面弹窗代写）
+    keepAlive: null,    // 结果面板打开期间的后台心跳定时器
     captureSession: null,
     captureSerial: 0,
     capturing: false,
@@ -886,8 +890,8 @@
     const outW = canvas.width;
     const outH = canvas.height;
 
-    // 剪贴板图片仅在安全上下文（HTTPS/localhost）可用；HTTP 页面不支持时隐藏「复制」按钮
-    const canCopy = typeof ClipboardItem !== 'undefined' && navigator.clipboard && typeof navigator.clipboard.write === 'function';
+    // 「复制」在任何上下文都显示：安全上下文走异步剪贴板 API，
+    // HTTP 等非安全上下文由聚焦的扩展弹窗页（copy.html）代写。
 
     els.result.style.display = 'block';
     els.result.innerHTML = `
@@ -898,7 +902,7 @@
       <img class="rr-img" id="rr-img" alt="预览" />
       <div class="rr-actions">
         <button class="primary" data-act="save">保存 PNG</button>
-        ${canCopy ? '<button data-act="copy">复制</button>' : ''}
+        <button data-act="copy">复制</button>
         <button data-act="close">关闭</button>
       </div>
       <div class="rr-msg" id="rr-msg"></div>`;
@@ -940,6 +944,25 @@
       });
     });
     // 不自动保存/复制：由用户在结果面板手动选择，避免截图后立即弹出保存对话框
+    startKeepAlive();
+  }
+
+  // Service Worker 空闲约 30 秒即被 Chrome 回收。结果面板打开期间每 20s 发一次心跳，
+  // 避免用户思考几秒后点「保存/复制」时后台正在冷启动，导致建连竞态失败
+  // （Could not establish connection. Receiving end does not exist.）。
+  function startKeepAlive() {
+    stopKeepAlive();
+    if (IS_TEST) return;
+    state.keepAlive = setInterval(() => {
+      sendMessage({ type: 'PING' });
+    }, 20000);
+  }
+
+  function stopKeepAlive() {
+    if (state.keepAlive) {
+      clearInterval(state.keepAlive);
+      state.keepAlive = null;
+    }
   }
 
   function showError(session, msg) {
@@ -1000,11 +1023,27 @@
     }
   }
 
+  // 返回 true 表示 Service Worker 已确认下载创建（后续状态由端口消息继续驱动）；
+  // 返回 false 表示端口在确认前就断开——通常是 SW 被 Chrome 回收后正在冷启动的建连竞态，
+  // 上层应退避重试。
   async function sendBlobInChunks(blob, filename, onStatus, silent) {
     const requestId = createRequestId();
-    const port = chrome.runtime.connect({ name: 'scrollshot-download' });
+    let port;
+    try {
+      port = chrome.runtime.connect({ name: 'scrollshot-download' });
+    } catch (err) {
+      return false;
+    }
     const transfer = { requestId, port, downloadCreated: false, silent: !!silent };
-    port.onMessage.addListener((message) => onStatus(message, requestId));
+    let settled = false;
+    let resolveConnected = null;
+    const connected = new Promise((resolve) => { resolveConnected = resolve; });
+    const settle = (value) => { if (!settled) { settled = true; resolveConnected(value); } };
+
+    port.onMessage.addListener((message) => {
+      if (message && message.type === 'DOWNLOAD_STARTED') settle(true);
+      onStatus(message, requestId);
+    });
     port.onDisconnect.addListener(() => {
       const error = chrome.runtime.lastError;
       // 理论上下载只会在捕获完成后开始；仍将异常断开视为会话取消，防止未来
@@ -1013,22 +1052,27 @@
       if (state.download && state.download.requestId === requestId && !state.download.downloadCreated) {
         onStatus({ type: 'DOWNLOAD_ERROR', requestId, error: error ? error.message : '下载连接已断开' }, requestId);
       }
+      settle(false);
     });
 
     state.download = transfer;
     port.postMessage({ type: 'DOWNLOAD_BEGIN', requestId, filename, mime: 'image/png', byteLength: blob.size });
     let index = 0;
     for (let offset = 0; offset < blob.size; offset += DOWNLOAD_CHUNK_BYTES) {
-      if (!state.download || state.download.requestId !== requestId) return transfer;
+      if (!state.download || state.download.requestId !== requestId) { settle(false); return false; }
       const bytes = new Uint8Array(await blob.slice(offset, offset + DOWNLOAD_CHUNK_BYTES).arrayBuffer());
-      if (!state.download || state.download.requestId !== requestId) return transfer;
+      if (!state.download || state.download.requestId !== requestId) { settle(false); return false; }
       port.postMessage({ type: 'DOWNLOAD_CHUNK', requestId, index, base64: encodeChunk(bytes) });
       index += 1;
     }
-    if (state.download && state.download.requestId === requestId) {
-      port.postMessage({ type: 'DOWNLOAD_END', requestId, count: index, byteLength: blob.size });
-    }
-    return transfer;
+    if (!state.download || state.download.requestId !== requestId) { settle(false); return false; }
+    port.postMessage({ type: 'DOWNLOAD_END', requestId, count: index, byteLength: blob.size });
+
+    // 等 SW 确认下载创建；超时或提前断开都视为本次未建成，交由上层重试。
+    return Promise.race([
+      connected,
+      new Promise((resolve) => setTimeout(() => resolve(false), 15000)),
+    ]);
   }
 
   async function savePng(canvas, w, h, msgEl, silent) {
@@ -1051,9 +1095,24 @@
       return;
     }
     try {
-      await sendBlobInChunks(blob, filename, (message, requestId) => {
-        updateDownloadStatus(message, requestId, msgEl);
-      }, silent);
+      // SW 可能刚被 Chrome 回收，建连存在竞态；失败退避重试
+      for (let attempt = 0; attempt < 3; attempt++) {
+        if (attempt) {
+          if (msgEl && !silent) {
+            msgEl.textContent = '正在重试保存…（' + attempt + '/2）';
+            msgEl.className = 'rr-msg';
+          }
+          await new Promise((r) => setTimeout(r, 300 * attempt));
+        }
+        const connected = await sendBlobInChunks(blob, filename, (message, requestId) => {
+          updateDownloadStatus(message, requestId, msgEl);
+        }, silent);
+        if (connected) return;
+      }
+      if (msgEl && !silent) {
+        msgEl.textContent = '保存失败：无法连接扩展后台，请重试';
+        msgEl.className = 'rr-msg err';
+      }
     } catch (err) {
       if (msgEl && !silent) {
         msgEl.textContent = '保存失败：' + (err.message || err);
@@ -1062,20 +1121,85 @@
     }
   }
 
+  // Blob 无法通过 chrome.runtime.sendMessage 传递（到达即变成空对象），
+  // 复制弹窗只能分块索取 base64。分块大小与下载保持一致。
+  async function blobToBase64Chunks(blob) {
+    const chunks = [];
+    for (let offset = 0; offset < blob.size; offset += DOWNLOAD_CHUNK_BYTES) {
+      const bytes = new Uint8Array(await blob.slice(offset, offset + DOWNLOAD_CHUNK_BYTES).arrayBuffer());
+      chunks.push(encodeChunk(bytes));
+    }
+    return chunks;
+  }
+
+  // 普通 HTTP 页面不是安全上下文，navigator.clipboard 整个 API 都不存在；
+  // 此时由后台弹出「聚焦的扩展页」（copy.html）代写剪贴板——扩展页是安全上下文且拥有
+  // clipboardWrite 权限，窗口聚焦即可写入。图片数据不经过 Service Worker，
+  // 由弹窗页分块向本内容脚本索取（COPY_CHUNKS），写完回传 COPY_RESULT。
+  async function copyViaPopup(blob) {
+    const requestId = createRequestId();
+    const chunks = await blobToBase64Chunks(blob);
+    let finish = null;
+    const done = new Promise((resolve) => { finish = resolve; });
+    state.copy = { requestId, chunks, finish };
+
+    // SW 可能刚被 Chrome 回收，建连存在竞态；通道类失败退避重试（业务错误不重试，
+    // 避免重复弹出复制窗口）
+    let opened = false;
+    let lastError = null;
+    for (let attempt = 0; attempt < 3 && !opened; attempt++) {
+      if (attempt) await new Promise((r) => setTimeout(r, 300 * attempt));
+      const resp = await sendMessage({ type: 'OPEN_COPY_WINDOW', requestId, total: chunks.length });
+      if (resp && resp.error) {
+        lastError = resp.error;
+        if (!/connection|Receiving end|port closed|Could not establish|message port/i.test(resp.error)) break;
+        continue;
+      }
+      opened = true;
+    }
+    if (!opened) {
+      state.copy = null;
+      return { ok: false, error: lastError || '无法打开复制窗口' };
+    }
+
+    let timer = 0;
+    const timeout = new Promise((resolve) => {
+      timer = setTimeout(() => resolve({ ok: false, error: '复制操作超时，请重试' }), COPY_TIMEOUT_MS);
+    });
+    const result = await Promise.race([done, timeout]);
+    clearTimeout(timer);
+    if (state.copy && state.copy.requestId === requestId) state.copy = null;
+    return result;
+  }
+
   async function copyPng(canvas, msgEl, silent) {
+    const say = (text, isErr) => {
+      if (msgEl && !silent) {
+        msgEl.textContent = text;
+        msgEl.className = 'rr-msg' + (isErr ? ' err' : '');
+      }
+    };
     try {
       const blob = await new Promise((res) => canvas.toBlob(res, 'image/png'));
-      if (typeof ClipboardItem === 'undefined') throw new Error('当前浏览器不支持剪贴板图片');
-      await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
-      if (msgEl && !silent) {
-        msgEl.textContent = '已复制到剪贴板 ✓';
-        msgEl.className = 'rr-msg';
+      if (!blob) throw new Error('PNG 编码失败');
+      if (IS_TEST) { say('测试模式：未真正复制', false); return; }
+      const canUseClipboardApi = typeof ClipboardItem !== 'undefined'
+        && navigator.clipboard && typeof navigator.clipboard.write === 'function';
+      if (canUseClipboardApi) {
+        try {
+          await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
+          say('已复制到剪贴板 ✓', false);
+          return;
+        } catch (err) {
+          // 文档未聚焦/权限被拒：落到弹窗代写
+        }
       }
+      say('正在准备复制…', false);
+      const result = await copyViaPopup(blob);
+      if (result && result.ok) say('已复制到剪贴板 ✓', false);
+      else say('复制失败：' + ((result && result.error) || '未知错误'), true);
     } catch (err) {
-      if (msgEl && !silent) {
-        msgEl.textContent = '复制失败：' + (err.message || err);
-        msgEl.className = 'rr-msg err';
-      }
+      say('复制失败：' + (err.message || err), true);
     }
   }
 
@@ -1131,6 +1255,8 @@
       try { transfer.port.disconnect(); } catch (err) { /* 忽略 */ }
       state.download = null;
     }
+    if (state.copy) state.copy = null; // 弹窗后续索取会失败并自行关闭
+    stopKeepAlive();
     if (state.rafId) cancelAnimationFrame(state.rafId);
     if (state.thumbUrl) { URL.revokeObjectURL(state.thumbUrl); state.thumbUrl = null; }
     if (host && host.parentNode) host.parentNode.removeChild(host);
@@ -1141,7 +1267,7 @@
       dragging: false, resultMode: false, scroller: null, vb: null,
       startContent: null, curContent: null, lastMouse: null,
       autoScrollDir: { x: 0, y: 0 }, rafId: 0, lastTs: 0,
-      lastCanvas: null, thumbUrl: null, download: null, capturing: false,
+      lastCanvas: null, thumbUrl: null, download: null, keepAlive: null, capturing: false,
       captureSession: null, dragOriginalScroll: null,
     });
   }
@@ -1177,6 +1303,25 @@
     chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       if (msg && (msg.type === 'DOWNLOAD_STARTED' || msg.type === 'DOWNLOAD_COMPLETE' || msg.type === 'DOWNLOAD_ERROR')) {
         if (state.download) updateDownloadStatus(msg, state.download.requestId, els && els.result && els.result.querySelector('#rr-msg'));
+        return false;
+      }
+      if (msg && msg.type === 'COPY_CHUNKS') {
+        // 复制弹窗分批索取图片数据
+        const transfer = state.copy;
+        if (!transfer || transfer.requestId !== msg.requestId || !Array.isArray(transfer.chunks)) {
+          sendResponse({ error: '复制会话已结束' });
+          return true;
+        }
+        const from = Math.max(0, Number(msg.from) || 0);
+        const count = clamp(Number(msg.count) || COPY_CHUNK_BATCH, 1, COPY_CHUNK_BATCH);
+        sendResponse({ from, total: transfer.chunks.length, chunks: transfer.chunks.slice(from, from + count) });
+        return true;
+      }
+      if (msg && msg.type === 'COPY_RESULT') {
+        const transfer = state.copy;
+        if (transfer && transfer.requestId === msg.requestId) {
+          transfer.finish({ ok: !!msg.ok, error: msg.error || null });
+        }
         return false;
       }
       if (msg && msg.type === 'START') {

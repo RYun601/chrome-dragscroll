@@ -229,3 +229,92 @@ DataTables 插件（`FixedColumns`）会在表格左侧生成**主表的克隆�
 - 已执行：`window-scroll.html`，PASS，回退到了 `window` 滚动。
 - 已执行：`options.html`，语义标签与主区域结构正确，`HTTP/file` 环境下剪贴板 API 不可用属于预期；浏览器可访问性快照为 `100`。
 - 待验收：Chrome 真实扩展加载后的 `captureVisibleTab` 真实截屏、分块下载、真实 PNG 保存、标签切换取消、`Esc` 恢复原始滚动位置，以及下载状态在结果面板中的最终显示。
+
+## 2026-09-22 保存与复制链路修复（HTTP 后台页实测）
+
+### 问题现象
+
+- 在 `http://adm.idr.loc/home/index` 等页面上：截图完成后结果面板**没有「复制」按钮**；点「保存 PNG」提示**保存失败**（无具体原因）。
+
+### 根因（两条互不相关）
+
+1. **保存失败：MV3 Service Worker 没有 `URL.createObjectURL`。**
+   旧 `background.js` 的 `DOWNLOAD` 分支执行 `URL.createObjectURL(msg.blob)`，在 Service Worker 上下文里必然抛
+   `TypeError: URL.createObjectURL is not a function`（已实测确认，`URL.revokeObjectURL` 同样不存在）。
+   监听器抛错后内容脚本只收到空响应，`savePng` 于是显示不带原因的「保存失败」。**该失败与页面无关，所有页面保存都会失败**，
+   只是用户在 HTTP 页面上同时遇到「没有复制按钮」，把两个问题一起报了出来。
+   现行实现已改为「base64 分块经 Port 传给 Service Worker → Offscreen Document（扩展页，有 `URL.createObjectURL`）
+   重组 Blob 并持有 objectURL → `chrome.downloads.download`」，本次实测确认保存链路在安全/非安全源均正常。
+2. **没有复制按钮：普通 HTTP 页面不是安全上下文。**
+   `navigator.clipboard` 与 `ClipboardItem` 在非安全上下文里整个 API 都不存在（实测 `window.isSecureContext === false`），
+   旧逻辑据此直接隐藏按钮。
+
+### 复制兜底方案选型（Chrome 153 实测，共 10 组对照）
+
+| 方案 | 实测结果 | 结论 |
+| --- | --- | --- |
+| `document.execCommand('copy')` + 选中临时 `<img>` | 只写入 `text/html`，**不写入 `image/png`**；测试了可见/opacity/屏外/visibility、blob URL 与 data URL、isolated world 与主 world、offscreen 文档共 10 种组合，全部只有 HTML | 放弃 |
+| Offscreen Document 内 `navigator.clipboard.write` | 报 `Document is not focused`；offscreen 文档永远没有焦点（即使浏览器窗口已聚焦，`document.hasFocus()` 仍为 false） | 放弃 |
+| Blob 直接经 `chrome.runtime.sendMessage` 传递 | 到达接收方即变成空对象（实测 `msg.blob.size === undefined`） | 必须走 base64 分块 |
+| **聚焦的扩展弹窗页**（`copy.html`）代写 | 扩展页是安全上下文 + `clipboardWrite` 权限 + 窗口聚焦即可写入；实测读回剪贴板为 `image/png`，尺寸与像素和截图一致 | **采用** |
+
+### 实现
+
+- 新增 `copy.html` / `copy.js`：复制中介页。通过 `chrome.tabs.sendMessage` 向内容脚本**分批**索取 base64 分块
+  （每批 8 × 192KB，与下载分块一致），重组为 Blob 后 `navigator.clipboard.write`，结果回传内容脚本并自动关闭（成功约 0.3s）。
+- `background.js` 新增 `OPEN_COPY_WINDOW`：`chrome.windows.create({type:'popup', focused:true})` 打开上述页面，
+  图片数据不经过 Service Worker。
+- `content/content.js`：`copyPng` 改为「剪贴板 API 优先 → 弹窗代写兜底」；结果面板**不再按安全上下文隐藏**「复制」按钮；
+  新增 `copy` 传输会话与 `COPY_CHUNKS` / `COPY_RESULT` 消息，`teardown` 时清理。
+- 无新增权限（`chrome.windows.create` 无需权限；`clipboardWrite` 已有）。
+
+### 验收记录（2026-09-22，Chrome 153 实测）
+
+- 非安全源（`http://192.168.2.10:8899` 复刻后台页，与 `adm.idr.loc` 同为 HTTP 非安全上下文）：
+  - 保存 PNG → 面板「已保存 ✓」，Offscreen Document 正常创建；
+  - 复制 → 按钮存在，面板「已复制到剪贴板 ✓」，弹窗自校验剪贴板为 `image/png` 250×3126（与截图尺寸一致）。
+- 安全源（`http://127.0.0.1:8899`）：保存 → 「已保存 ✓」；复制 → 直连剪贴板（无弹窗），读回 `image/png` 250×3126。
+- `test/*.html` 六个测试页：结果面板三按钮齐全，测试模式复制提示「测试模式：未真正复制」，事件顺序 `capture-start → capture-done` 正常。
+- `node --check background.js`、`node --check content/content.js`、`node --check copy.js` 均通过。
+- 待用户复核：真实 `adm.idr.loc` 需登录（短信验证码），本机无法进入；已用同协议的本地 HTTP 页面等价复现两类问题并验证修复。
+
+## 2026-09-23 Service Worker 保活与建连重试
+
+### 问题现象
+
+真实页面（`http://adm.idr.loc/home/index`）截图完成后，过一会儿再点结果面板按钮：
+
+- 保存 PNG → `保存失败：Could not establish connection. Receiving end does not exist.`
+- 复制 → `复制失败：The message port closed before a response was received.`
+
+### 根因
+
+两条错误都是 Chrome 扩展消息通道错误，指向 **MV3 Service Worker 不可达**：
+
+1. Chrome 会在 Service Worker **空闲约 30 秒后回收它**。从截图完成到用户点按钮往往超过 30 秒，
+   此时后台已被杀掉；
+2. `chrome.runtime.connect()` / `chrome.runtime.sendMessage()` 通常能把 SW 唤醒并投递消息，
+   但在 **SW 正在关闭的瞬间**存在竞态窗口，建连会直接失败并返回上述两种错误；
+3. 保存链路用 `runtime.Port` 传分块数据，端口在 `DOWNLOAD_STARTED` 确认前断开；
+   复制链路用 `sendMessage` 请求弹窗，消息在 SW 冷启动途中被丢弃。
+
+> 本地验证时若用 DevTools/CDP 附加到 Service Worker，SW 永远不会被回收，问题不会复现；
+> 必须脱离调试会话后静置 >30s 才能复现（已实测：静置 45s 后 SW target 消失）。
+
+### 修复（两层防护）
+
+1. **心跳保活**：结果面板打开期间，内容脚本每 20s 向后台发一次 `PING`。
+   每条消息都会重置 SW 的空闲计时器，面板开着后台就不会被回收，从根上消除竞态；
+   面板关闭（teardown）时停掉心跳。
+2. **建连重试**：即便竞态仍然发生也不直接失败——
+   保存在端口未确认下载创建时整体重试（最多 3 次，退避 0/300/600ms）；
+   复制在遇到通道类错误（connection / Receiving end / port closed）时重试，
+   业务错误不重试（避免重复弹出复制窗口）。
+
+### 验收记录（2026-09-23，Chrome 153，非安全上下文 HTTP 页实测）
+
+- 修复前：静置 45s 后 SW target 消失（已被回收）；
+- 修复后：同样静置 45s，`SW target 仍存在: true`（心跳生效），保存显示「已保存 ✓」；
+- 复制在同样条件下显示「已复制到剪贴板 ✓」，弹窗自校验剪贴板为 `image/png` 250×3125（与截图尺寸一致）；
+- `test/*.html` 六个测试页回归通过（三按钮齐全、测试模式提示正确）；
+- `node --test test/reliability-contract.test.js` 12/12 通过；`node --check` 三个 JS 文件通过。
