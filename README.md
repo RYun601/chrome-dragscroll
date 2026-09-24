@@ -2,16 +2,7 @@
 
 一个 **Chrome Manifest V3** 截图插件：**容器感知**的拖拽式滚动截图——专门解决「普通整页截图插件截不动」的页面。
 
-## 它跟主流截图插件有什么不同？
-
-GoFullPage / Awesome Screenshot / FireShot / Full Page Screenshot 等**只会滚动 `window`（页面主滚动条）**。
-一旦遇到 **固定外壳 + 内部滚动** 的后台页（侧边栏/顶栏固定、表格在内部容器里滚动），它们就滚不动、截不全。
-
-**scrollshot 识别的是光标下真正的滚动容器**——滚动发生在容器上，而不是 window：
-
-- **拖到边缘即自动滚动**：光标到达滚动区域（视口或任意内部滚动容器）上下左右边缘即自动滚动，选区跨屏持续增长，松手生成**跨屏长图**；
-- **手动控制滚动距离**：滚多少由你决定，随时松手，天然适配无限滚动 / 懒加载列表；
-- **横纵向都能截**：宽表格的横向滚动也不放过。
+主流整页截图插件只会滚动 `window`；一旦遇到固定外壳 + 内部滚动的后台页（侧边栏/顶栏固定、表格在内部容器里滚动）就滚不动。scrollshot 识别的是光标下真正的滚动容器。
 
 ## 核心特色
 
@@ -24,14 +15,6 @@ GoFullPage / Awesome Screenshot / FireShot / Full Page Screenshot 等**只会滚
 | 🧹 **截图干净无污染** | 捕获时自动隐藏覆盖层：不偏色、不错位、页头不重复；失败自动重试并明确提示 |
 | 💾 **大图内存友好** | Blob 直存，避免超大 base64 撑爆内存 |
 | 🔒 **最小权限、隐私干净** | 仅 `activeTab`/`scripting`/`storage`/`downloads`/`clipboardWrite`/`offscreen`；`offscreen` 仅用于本地隐藏文档创建和释放 Blob URL，以可靠保存 PNG；无 `<all_urls>`、无网络请求、无数据收集 |
-
-## 兼容性与保存状态
-
-- 兼容 Chrome 109+，不依赖 Chrome 148 才有的 structured clone 消息序列化；扩展仍按现有 JSON 消息链路工作。
-- 输出预算是单边最多 32000px、总输出不超过 64,000,000 像素，PNG 文件不超过 128 MiB；超出时会提示缩小选区或降低浏览器缩放。
-- 保存链路内部阶段依次是：准备 → 传输 → 浏览器正在保存 → 已保存 / 失败；结果面板实际可见的文案是「正在准备保存…」「浏览器正在保存…」「已保存 ✓ / 保存失败…」，其中“传输”由后台端口完成，不单独展示。保存仍然要由用户手动点击「保存 PNG」触发。
-- 每次 `captureVisibleTab` 前都会检查原截图标签是否仍为活动标签；如果期间切换标签，当前会话会在下一次截图边界取消，避免错图。按 `Esc` 会立即取消并恢复原始滚动位置。
-- `test/*.html` 的测试模式会跳过真实 `captureVisibleTab`，只验证拖拽、滚动、拼接和状态读数；真实 PNG 保存需要在已加载扩展的 Chrome 里验收。
 
 ## 安装（开发者模式）
 
@@ -67,13 +50,7 @@ GoFullPage / Awesome Screenshot / FireShot / Full Page Screenshot 等**只会滚
 ├─ build-icons.ps1        # 图标生成脚本
 ├─ icons\                 # 128/48/16 PNG 图标
 ├─ docs\design.md         # 设计文档（含调研结论与已知限制）
-└─ test\
-   ├─ capture-engine.html  # 引擎自测页（嵌套滚动容器，纵向+横向）
-   ├─ selection-width-regression.html # 选区宽度回归测试
-   ├─ selection-height-regression.html # 选区高度回归测试
-   ├─ demo-page.html       # 简化复刻页（固定布局 + overflow:auto 内部滚动）
-   ├─ perfect-scrollbar.html # 忠实复刻页（PerfectScrollbar：overflow:hidden 纵向滚动 + 宽表格横向滚动）
-   └─ window-scroll.html   # 窗口滚动测试页
+└─ test\                  # 引擎测试页（无需装扩展）
 ```
 
 ## 在浏览器里自测引擎（无需装扩展）
@@ -88,7 +65,7 @@ GoFullPage / Awesome Screenshot / FireShot / Full Page Screenshot 等**只会滚
 - **滚动稳定等待**：每次滚动后等页面稳定再截图；懒加载/图片多的页面可调大（默认 130ms，含自动超时兜底防卡死）
 - **隐藏固定/悬浮元素**：截图时对 `fixed/sticky` 且与容器视框重叠的元素临时隐藏，避免长图中页头/悬浮按钮重复（默认开）
 
-> 截图完成后在结果面板**手动选择**「保存 PNG / 复制 / 关闭」，不会自动保存或弹窗；保存链路内部会经历「准备 / 传输 / 浏览器正在保存 / 已保存 / 失败」，但结果面板只显示「正在准备保存…」「浏览器正在保存…」「已保存 ✓ / 保存失败…」。
+> 截图完成后在结果面板**手动选择**「保存 PNG / 复制 / 关闭」，不会自动保存或弹窗；面板会显示「正在准备保存…」「浏览器正在保存…」「已保存 ✓ / 保存失败…」等状态。
 > 「复制」在 HTTPS / localhost 等**安全上下文**直接写剪贴板；普通 HTTP 页面没有 `navigator.clipboard`，
 > 此时会自动弹出一个瞬间关闭的小窗口（扩展页）代写，按钮照常可用。
 >
@@ -107,8 +84,3 @@ GoFullPage / Awesome Screenshot / FireShot / Full Page Screenshot 等**只会滚
 - 超大长图（单边 > 32000px 或选区 > 64,000,000 像素）受 canvas 内存限制，会提示缩小选区；
 - 无限滚动列表：由用户手动控制滚动距离（这正是「拖拽式」优于「自动滚到底」之处）；
 - iframe / 跨域内容：v1 不处理。
-
-## 后续可做（未实现）
-
-- 标注/编辑画布；导出 PDF；
-- 针对虚拟列表的「等待渲染」策略。
