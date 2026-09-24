@@ -32,3 +32,6 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
+
+# 内部开发过程文档（agent 工作流产物，含本机路径，不随仓库发布）
+docs/superpowers/
